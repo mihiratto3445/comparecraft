@@ -1959,7 +1959,7 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
           }
         }}
         onContextMenu={(e) => showContextMenu(e, tab().id, BACKGROUND_MENU)}
-        onScroll={(e) => vp.setScrollTop(e.currentTarget.scrollTop)}>
+        onScroll={(e) => vp.onScrollTop(e.currentTarget.scrollTop)}>
         <Show when={error()}>
           <div class="banner err">{error()}</div>
         </Show>

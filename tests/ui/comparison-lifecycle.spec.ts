@@ -294,3 +294,47 @@ test("reload updates the disk result while orphan opening preserves its status",
   await folderTab(page).click();
   await expect(orphan.locator(".fstatus")).toHaveText("◧");
 });
+
+test("a burst of scroll events triggers one virtual-window update", async ({ page, folders }) => {
+  const lines = Array.from({ length: 500 }, (_, i) => `Line ${i}`);
+  await folders.pair("burst.txt", lines.join("\n"), lines.join("\n"));
+  await openMinimap(page, join(folders.left, "burst.txt"), join(folders.right, "burst.txt"));
+  const pane = page.locator(".tab-view:visible .tpane").first();
+  // Count distinct render batches: each update replaces the visible .trow data-ri set.
+  await pane.evaluate((el) => {
+    const seen = new Set<string>();
+    (window as Window & { __burstRenders?: number }).__burstRenders = 0;
+    new MutationObserver(() => {
+      const rows = [...el.querySelectorAll<HTMLElement>(".trow")].map((r) => r.dataset.ri).join(",");
+      if (seen.has(rows)) return;
+      seen.add(rows);
+      (window as Window & { __burstRenders?: number }).__burstRenders!++;
+    }).observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
+  });
+  await pane.evaluate(async (el) => {
+    for (let top = 100; top <= 2000; top += 100) {
+      el.scrollTop = top;
+      el.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+  await page.waitForTimeout(200);
+  const renders = await page.evaluate(() => (window as Window & { __burstRenders?: number }).__burstRenders ?? 0);
+  // rAF coalescing keeps a burst spread across microtasks to a handful of renders
+  // (well under one per event); without it every event triggers a separate update.
+  expect(renders).toBeLessThanOrEqual(8);
+});
+
+test("rapid minimap arrow presses accumulate without losing steps", async ({ page, folders }) => {
+  const lines = Array.from({ length: 500 }, (_, i) => `Line ${i}`);
+  await folders.pair("keys.txt", lines.join("\n"), lines.join("\n"));
+  await openMinimap(page, join(folders.left, "keys.txt"), join(folders.right, "keys.txt"));
+  const map = page.getByRole("scrollbar", { name: "Difference map" });
+  await map.focus();
+  // Four ArrowDown presses within one frame must scroll four rows, not one.
+  await page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>(".overview")!;
+    for (let i = 0; i < 4; i++) el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+  });
+  await expect.poll(async () => (await minimapMetrics(page)).top).toBe(80);
+});

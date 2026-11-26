@@ -127,7 +127,29 @@ export function usePaneFocus<S extends string | number>(initial: S, onFocus?: (s
 export function useViewport(el: () => HTMLElement | undefined) {
   const [height, setHeight] = createSignal(600);
   const [width, setWidth] = createSignal(0);
-  const [scrollTop, setScrollTop] = createSignal(0);
+  const [scrollTop, setTop] = createSignal(0);
+  // DOM scroll events fire at pointer/touch rate; coalesce only those updates to one
+  // per frame. Programmatic writes stay synchronous so read-modify-write sequences
+  // (keyboard navigation, jump-to-row) cannot lose a step.
+  let pending: number | undefined;
+  let nextTop = 0;
+  const setScrollTop = (top: number) => {
+    if (pending !== undefined) {
+      cancelAnimationFrame(pending);
+      pending = undefined;
+    }
+    setTop(top);
+  };
+  const onScrollTop = (top: number) => {
+    nextTop = top;
+    if (pending === undefined) pending = requestAnimationFrame(() => {
+      pending = undefined;
+      setTop(nextTop);
+    });
+  };
+  onCleanup(() => {
+    if (pending !== undefined) cancelAnimationFrame(pending);
+  });
   onMount(() => {
     const e = el();
     if (!e) return;
@@ -145,7 +167,7 @@ export function useViewport(el: () => HTMLElement | undefined) {
     const end = Math.min(count, Math.ceil((scrollTop() + height()) / rowH) + overscan);
     return { start, end };
   };
-  return { height, width, scrollTop, setScrollTop, range };
+  return { height, width, scrollTop, setScrollTop, onScrollTop, range };
 }
 
 /** Renders a line with highlighted UTF-16 ranges. */

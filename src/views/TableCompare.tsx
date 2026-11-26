@@ -75,7 +75,7 @@ export default function TableCompare(props: { tab: Tab; active: boolean }) {
   /** Each side scrolls horizontally on its own; vertical scrolling stays in step. */
   function onPaneScroll(from: HTMLDivElement, to: HTMLDivElement) {
     if (to.scrollTop !== from.scrollTop) to.scrollTop = from.scrollTop;
-    vp.setScrollTop(from.scrollTop);
+    vp.onScrollTop(from.scrollTop);
   }
 
   function startSplit(e: PointerEvent) {

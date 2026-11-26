@@ -374,7 +374,7 @@ export default function HexCompare(props: { tab: Tab; active: boolean }) {
         tabIndex={0}
         {...paneFocus.sharedPaneProps()}
         onContextMenu={onContext}
-        onScroll={(e) => vp.setScrollTop(e.currentTarget.scrollTop)}
+        onScroll={(e) => vp.onScrollTop(e.currentTarget.scrollTop)}
       >
         <div style={{ height: `${rows().count * editorRowHeight()}px`, position: "relative" }}>
           <Index each={win()}>
