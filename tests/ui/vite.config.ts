@@ -5,6 +5,39 @@ import { resolve, join, extname, sep } from "node:path";
 import { BackendClient } from "../../extensions/vscode/src/backend";
 import type { FNode, FolderResult, Summary } from "../../src/api";
 
+/** Folder status from its children, as the comparison engine computes it. */
+function rollup(children: FNode[]): FNode["status"] {
+  if (children.some((c) => c.status === "diff" || c.status === "left" || c.status === "right" || c.status === "error")) return "diff";
+  return children.some((c) => c.status === "similar") ? "similar" : "same";
+}
+
+/** Newest change time below a node, per side, mirroring the engine's `newest_changes`. */
+function newestChanges(node: FNode): [number | null, number | null] {
+  const times: [number | null, number | null] = [null, null];
+  const add = (side: 0 | 1 | null, time: number | null | undefined) => {
+    if (side == null || time == null) return;
+    const current = times[side];
+    if (current == null || time > current) times[side] = time;
+  };
+  for (const child of node.children ?? []) {
+    const [cl, cr] = newestChanges(child);
+    add(0, cl);
+    add(1, cr);
+    if (child.dir) continue;
+    if (child.status === "left") add(0, child.left?.modified);
+    else if (child.status === "right") add(1, child.right?.modified);
+    else if (child.status === "diff" && child.newer) add(child.newer === "left" ? 0 : 1, child[child.newer]?.modified);
+  }
+  return times;
+}
+
+/** Side holding the newest change below a node, per the engine's `content_newer`. */
+function contentNewer(node: FNode): FNode["newer"] {
+  const [l, r] = newestChanges(node);
+  if (l != null && r != null) return l > r ? "left" : r > l ? "right" : undefined;
+  return l != null ? "left" : r != null ? "right" : undefined;
+}
+
 async function folderResult(left: string, right: string, options: { dotNamesFirst?: boolean }): Promise<FolderResult> {
   const summary: Summary = { files: 0, same: 0, similar: 0, diff: 0, leftOnly: 0, rightOnly: 0, errors: 0 };
   const walk = async (rel: string): Promise<FNode[]> => {
@@ -19,26 +52,32 @@ async function folderResult(left: string, right: string, options: { dotNamesFirs
         }
       }));
       const dir = !!(l ?? r)?.isDirectory();
-      const status = !l ? "right" : !r ? "left" : l.size === r.size && Math.abs(l.mtimeMs - r.mtimeMs) < 2000 ? "same" : "diff";
-      if (!dir) {
-        summary.files++;
-        if (status === "left") summary.leftOnly++;
-        else if (status === "right") summary.rightOnly++;
-        else summary[status]++;
-      }
-      return {
-        name, rel: path.split(sep).join("/"), dir, status,
+      const node: FNode = {
+        name, rel: path.split(sep).join("/"), dir, status: "same",
         left: l ? { name, size: l.size, modified: l.mtimeMs } : undefined,
         right: r ? { name, size: r.size, modified: r.mtimeMs } : undefined,
-        children: dir && l && r ? await walk(path) : undefined,
       };
+      if (dir) {
+        node.children = l && r ? await walk(path) : undefined;
+        node.status = !l ? "right" : !r ? "left" : rollup(node.children ?? []);
+        node.newer = node.status === "diff" ? contentNewer(node) : undefined;
+      } else {
+        node.status = !l ? "right" : !r ? "left" : l.size === r.size && Math.abs(l.mtimeMs - r.mtimeMs) < 2000 ? "same" : "diff";
+        node.newer = node.status === "diff" ? (l!.mtimeMs > r!.mtimeMs ? "left" : "right") : undefined;
+        summary.files++;
+        if (node.status === "left") summary.leftOnly++;
+        else if (node.status === "right") summary.rightOnly++;
+        else summary[node.status]++;
+      }
+      return node;
     }));
     const collator = new Intl.Collator("en", { ignorePunctuation: true, sensitivity: "base" });
     return nodes.sort((first, second) => Number(second.dir) - Number(first.dir)
       || (options.dotNamesFirst === false ? 0 : Number(second.name.startsWith(".")) - Number(first.name.startsWith(".")))
       || collator.compare(first.name, second.name));
   };
-  return { root: { name: "", rel: "", dir: true, status: "same", children: await walk("") }, summary };
+  const children = await walk("");
+  return { root: { name: "", rel: "", dir: true, status: rollup(children), children }, summary };
 }
 
 export default defineConfig({

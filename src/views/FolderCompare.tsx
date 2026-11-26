@@ -140,6 +140,38 @@ function statusBit(n: FNode, st: Status, ignoreUnimportant: boolean): number {
   return BIT.diff;
 }
 
+/**
+ * Newest change below a node, per side: a differing file counts for its newer side and an orphan
+ * for the side it exists on (mirrors `newest_changes` in the comparison engine).
+ */
+function newestChanges(n: FNode): [number | null, number | null] {
+  const times: [number | null, number | null] = [null, null];
+  const add = (side: 0 | 1 | null, t: number | null | undefined) => {
+    if (side == null || t == null) return;
+    const cur = times[side];
+    if (cur == null || t > cur) times[side] = t;
+  };
+  for (const c of n.children ?? []) {
+    const [cl, cr] = newestChanges(c);
+    add(0, cl);
+    add(1, cr);
+    if (c.dir) continue;
+    if (c.status === "left") add(0, c.left?.modified);
+    else if (c.status === "right") add(1, c.right?.modified);
+    else if (c.status === "diff" && c.newer) add(c.newer === "left" ? 0 : 1, c.newer === "left" ? c.left?.modified : c.right?.modified);
+  }
+  return times;
+}
+
+/** Side holding a folder's newest change, so folders are colored by their content. */
+function contentNewer(n: FNode): "left" | "right" | undefined {
+  const [l, r] = newestChanges(n);
+  if (l != null && r != null) return l > r ? "left" : r > l ? "right" : undefined;
+  if (l != null) return "left";
+  if (r != null) return "right";
+  return undefined;
+}
+
 /** Status of a paired folder from its children (as the comparison engine computes it). */
 function rollup(children: Status[]): Status {
   if (children.some((s) => s === "diff" || s === "left" || s === "right" || s === "error")) return "diff";
@@ -155,7 +187,10 @@ function recompute(root: FNode): Summary {
     const paired = !!n.left && !!n.right;
     if (n.dir) {
       if (paired && n.error) sum.errors++;
-      else if (paired) n.status = rollup((n.children ?? []).map((c) => c.status));
+      else if (paired) {
+        n.status = rollup((n.children ?? []).map((c) => c.status));
+        n.newer = n.status === "diff" ? contentNewer(n) : undefined;
+      }
     } else if (!paired) {
       sum.files++;
       n.left ? sum.leftOnly++ : sum.rightOnly++;
@@ -169,6 +204,7 @@ function recompute(root: FNode): Summary {
   };
   walk(root, true);
   root.status = rollup((root.children ?? []).map((c) => c.status));
+  root.newer = root.status === "diff" ? contentNewer(root) : undefined;
   return sum;
 }
 

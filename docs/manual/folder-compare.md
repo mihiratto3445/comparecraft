@@ -91,7 +91,7 @@ Each row is colored by its comparison result. To see the meaning of the colors a
 
 These are the default colors of the light theme. You can change them on the [Colors, Fonts page of the Options](options.md#colors-fonts).
 
-Folders are colored to reflect their content: a folder that contains differences is shown as different. To show folders in plain text instead, turn off **Color folders to reflect content** in the Options. **Alternate row background (stripes)** adds stripes to the rows.
+Folders are colored to reflect their content: a folder that contains differences is shown as different, in red on the side that holds its newest difference and in grey on the other side. A folder whose differences have no timestamp winner (equal timestamps, or errors only) stays red on both sides. To show folders in plain text instead, turn off **Color folders to reflect content** in the Options. **Alternate row background (stripes)** adds stripes to the rows.
 
 ## Expand and collapse folders
 
