@@ -174,6 +174,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     let err = "";
     if (content) {
       setLines(s, content);
+      scanMaxCh(s);
     } else if (path) {
       try {
         file = await api.loadText(path);
@@ -188,7 +189,10 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     // Update from the latest state after the await; both sides may load concurrently.
     batch(() => {
       setCuts([]);
-      if (!content) setLines(s, file?.lines ?? []);
+      if (!content) {
+        setLines(s, file?.lines ?? []);
+        scanMaxCh(s);
+      }
       const m = [...meta()] as [TextFile | null, TextFile | null];
       m[s] = file;
       setMeta(m);
@@ -280,8 +284,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     await Promise.all([loadSide(0, lp, content?.[0] ?? undefined), loadSide(1, rp, content?.[1] ?? undefined)]);
     if (restore) {
       batch(() => {
-        if (restore[0]) setL(restore[0]);
-        if (restore[1]) setR(restore[1]);
+        if (restore[0]) { setL(restore[0]); scanMaxCh(0); }
+        if (restore[1]) { setR(restore[1]); scanMaxCh(1); }
         setDirty([!!restore[0], !!restore[1]]);
       });
     }
@@ -465,9 +469,16 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     return items;
   });
 
-  const maxCh = (s: Side) => createMemo(() => lines(s).reduce((m, l) => Math.max(m, l.length), 0));
-  const maxL = maxCh(0);
-  const maxR = maxCh(1);
+  // Longest line per side, used only to size the unwrapped pane. Track it incrementally so
+  // editing one line does not rescan the whole file.
+  const [maxL, setMaxL] = createSignal(0);
+  const [maxR, setMaxR] = createSignal(0);
+  const setMaxCh = (s: Side, n: number) => (s === 0 ? setMaxL(n) : setMaxR(n));
+  const scanMaxCh = (s: Side) => {
+    let m = 0;
+    for (const line of lines(s)) if (line.length > m) m = line.length;
+    setMaxCh(s, m);
+  };
 
   let syncing = false;
   const onScroll = (src: HTMLDivElement, dst: HTMLDivElement) => {
@@ -590,6 +601,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     batch(() => {
       setL(s.l);
       setR(s.r);
+      setMaxL(s.l.reduce((m, l) => Math.max(m, l.length), 0));
+      setMaxR(s.r.reduce((m, l) => Math.max(m, l.length), 0));
       setDirty([s.d[0] || s.b[0] !== base[0], s.d[1] || s.b[1] !== base[1]]);
     });
     recompute();
@@ -727,16 +740,27 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
   /** Replaces a side's lines, keeping manual alignment points in place. */
   function editLines(s: Side, next: string[]) {
     const prev = lines(s);
+    let a = 0;
+    while (a < prev.length && a < next.length && prev[a] === next[a]) a++;
+    let e = 0;
+    while (e < prev.length - a && e < next.length - a && prev[prev.length - 1 - e] === next[next.length - 1 - e]) e++;
     if (cuts().length) {
-      let a = 0;
-      while (a < prev.length && a < next.length && prev[a] === next[a]) a++;
-      let e = 0;
-      while (e < prev.length - a && e < next.length - a && prev[prev.length - 1 - e] === next[next.length - 1 - e]) e++;
       const delEnd = prev.length - e;
       const delta = next.length - prev.length;
       const k = keyOf(s);
       setCuts(cuts().map((c) => ({ ...c, [k]: c[k] <= a ? c[k] : c[k] >= delEnd ? c[k] + delta : a })));
     }
+    // Only the changed middle can grow the maximum; it can shrink only when a longest
+    // line was replaced. Keep the old maximum when that did not happen, and otherwise
+    // scan the unchanged prefix/suffix to find the new one — no full-file pass per edit.
+    const current = (s === 0 ? maxL : maxR)();
+    let removedLongest = false;
+    for (let i = a; i < prev.length - e; i++) if (prev[i].length === current) removedLongest = true;
+    let m = removedLongest ? 0 : current;
+    for (let i = 0; i < a; i++) if (prev[i].length > m) m = prev[i].length;
+    for (let i = next.length - e; i < next.length; i++) if (next[i].length > m) m = next[i].length;
+    for (let i = a; i < next.length - e; i++) if (next[i].length > m) m = next[i].length;
+    setMaxCh(s, m);
     setLines(s, next);
     markDirty(s);
   }
@@ -913,6 +937,9 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
         r = R();
       setL(r);
       setR(l);
+      const ml = maxL(), mr = maxR();
+      setMaxL(mr);
+      setMaxR(ml);
       setMeta([meta()[1], meta()[0]]);
       setDirty([dirty()[1], dirty()[0]]);
       base = [base[1], base[0]];
