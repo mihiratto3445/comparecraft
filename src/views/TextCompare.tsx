@@ -655,9 +655,13 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
    * difference section. A selection crossing the divider has no side to copy from.
    */
   function trackTextSelection() {
+    // Every tab keeps this listener registered, so ignore events for other views.
+    if (!props.active) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     const range = sel.getRangeAt(0);
+    // Bail before walking the DOM for selections outside this view (e.g. in a text input).
+    if (!paneL?.contains(range.startContainer) && !paneR?.contains(range.startContainer)) return;
     const start = rowAt(range.startContainer);
     const end = rowAt(range.endContainer);
     if (!start || !end || start.side !== end.side) return;
