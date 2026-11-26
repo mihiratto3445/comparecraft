@@ -797,6 +797,7 @@ fn pair_node(lp: &Loc, rp: &Loc, crel: &str, ln: &str, lm: &Meta, rn: &str, rm: 
         match compare_dirs(&lp.join(ln), &rp.join(rn), crel, cx, sum) {
             Ok(ch) => {
                 node.status = folder_status(&ch);
+                node.newer = if node.status == Status::Diff { content_newer(&ch) } else { None };
                 node.children = ch;
             }
             Err(e) => {
@@ -894,6 +895,43 @@ fn folder_status(children: &[Node]) -> Status {
     }
 }
 
+/// Newest modification time of a change below `children`, per side: a differing file counts for
+/// the side that is newer, an orphan for the side it exists on.
+fn newest_changes(children: &[Node]) -> (Option<i64>, Option<i64>) {
+    let mut l: Option<i64> = None;
+    let mut r: Option<i64> = None;
+    for c in children {
+        if c.dir {
+            let (cl, cr) = newest_changes(&c.children);
+            l = l.max(cl);
+            r = r.max(cr);
+            continue;
+        }
+        let modified = |side: &str| if side == "left" { c.left.as_ref() } else { c.right.as_ref() }.and_then(|s| s.modified);
+        match (c.status, c.newer.as_deref()) {
+            (Status::Left, _) => l = l.max(modified("left")),
+            (Status::Right, _) => r = r.max(modified("right")),
+            (Status::Diff, Some(side)) if side == "left" => l = l.max(modified("left")),
+            (Status::Diff, Some(_)) => r = r.max(modified("right")),
+            _ => {}
+        }
+    }
+    (l, r)
+}
+
+/// Side holding a folder's newest change. A folder is colored by its content, so it only shows as
+/// newer on the side whose newest difference lives there; without a timestamp winner both sides
+/// stay plain differences.
+fn content_newer(children: &[Node]) -> Option<String> {
+    match newest_changes(children) {
+        (Some(l), Some(r)) if l > r => Some("left".into()),
+        (Some(l), Some(r)) if r > l => Some("right".into()),
+        (Some(_), None) => Some("left".into()),
+        (None, Some(_)) => Some("right".into()),
+        _ => None,
+    }
+}
+
 /// A file found while flattening a tree.
 struct FlatFile {
     rel: String,
@@ -979,6 +1017,7 @@ fn finish_comparison(nodes: &mut [Node], left: &Loc, right: &Loc, cx: &Ctx, pend
             finish_comparison(&mut node.children, &left_child, &right_child, cx, pending, sum, total);
             if node.left.is_some() && node.right.is_some() && node.error.is_none() {
                 node.status = folder_status(&node.children);
+                node.newer = if node.status == Status::Diff { content_newer(&node.children) } else { None };
             }
             continue;
         }
@@ -1026,6 +1065,7 @@ fn compare_folders_impl(left: &str, right: &str, o: &FolderOptions, progress: Op
         cx.notify("comparing", total, Some(total), true);
     }
     let mut root = Node::new("", "", true, folder_status(&children));
+    root.newer = if root.status == Status::Diff { content_newer(&children) } else { None };
     root.left = Some(lp.root_side(left)?);
     root.right = Some(rp.root_side(right)?);
     root.children = children;
@@ -1608,6 +1648,44 @@ mod tests {
         let after = compare_folders(&l, &r, &o2).unwrap();
         assert_eq!(after.summary.diff, 1, "only ws.txt differs in binary"); // ws.txt
         assert_eq!(after.summary.left_only + after.summary.right_only, 0);
+    }
+
+    #[test]
+    fn folders_are_colored_by_the_newest_change_below_them() {
+        let d = tempfile::tempdir().unwrap();
+        let l = d.path().join("L");
+        let r = d.path().join("R");
+        // The only difference below "old" is older on the left.
+        write(&l.join("old/sub/x.txt"), "left");
+        write(&r.join("old/sub/x.txt"), "right");
+        set_time(&l.join("old/sub/x.txt"), 5000);
+        set_time(&r.join("old/sub/x.txt"), 10);
+        // The only difference below "mixed" is a file the right side does not have.
+        write(&l.join("mixed/keep.txt"), "same");
+        write(&r.join("mixed/keep.txt"), "same");
+        set_time(&l.join("mixed/keep.txt"), 10);
+        set_time(&r.join("mixed/keep.txt"), 10);
+        write(&l.join("mixed/x.txt"), "x");
+        set_time(&l.join("mixed/x.txt"), 10);
+        // Equal timestamps have no winner, so "tie" keeps both sides red.
+        write(&l.join("tie/x.txt"), "left");
+        write(&r.join("tie/x.txt"), "right");
+        set_time(&l.join("tie/x.txt"), 10);
+        set_time(&r.join("tie/x.txt"), 10);
+        let (ls, rs) = (l.to_string_lossy().into_owned(), r.to_string_lossy().into_owned());
+        let root = compare_folders(&ls, &rs, &FolderOptions::default()).unwrap().root;
+        assert_eq!(find(&root, "old").status, Status::Diff);
+        assert_eq!(find(&root, "old").newer.as_deref(), Some("right"));
+        assert_eq!(find(&root, "old/sub").newer.as_deref(), Some("right"));
+        assert_eq!(find(&root, "mixed").status, Status::Diff);
+        assert_eq!(find(&root, "mixed").newer.as_deref(), Some("left"));
+        assert_eq!(find(&root, "tie").newer, None);
+        // The progress pass finishes the deferred files, then rolls the folders up as well.
+        let progress = compare_folders_with_progress(&ls, &rs, &FolderOptions::default(), &|_| {}).unwrap().root;
+        assert_eq!(find(&progress, "old").newer.as_deref(), Some("right"));
+        assert_eq!(find(&progress, "old/sub").newer.as_deref(), Some("right"));
+        assert_eq!(find(&progress, "mixed").newer.as_deref(), Some("left"));
+        assert_eq!(find(&progress, "tie").newer, None);
     }
 
     #[test]

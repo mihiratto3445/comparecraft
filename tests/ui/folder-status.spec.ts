@@ -409,6 +409,15 @@ test("differences update ancestors and remove the row from the Same filter", asy
   await expect(row).toHaveCount(0);
 });
 
+test("a folder with older content is shown as older, not newer", async ({ page, folders }) => {
+  await folders.pair("nested/older.txt", "left\n", "right\n", false);
+  await folders.open(page);
+  const row = page.locator(".frow").filter({ hasText: "nested" });
+  await expect(row.locator(".fstatus")).toHaveText("≠");
+  await expect(row.locator(".fside").first()).toHaveClass(/\bolder\b/);
+  await expect(row.locator(".fside").last()).toHaveClass(/\bnewer\b/);
+});
+
 test("only unimportant differences retain the similar verdict", async ({ page, folders }) => {
   await folders.pair("pair.txt", "hello\n", "HELLO\n");
   await folders.open(page);
