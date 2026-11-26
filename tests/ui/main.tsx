@@ -43,7 +43,9 @@ setHost({
   open: async () => null,
   save: async () => null,
   readText: async () => "",
-  writeText: async () => {},
+  writeText: async (text) => {
+    window.dispatchEvent(new CustomEvent("comparecraft-test-clipboard", { detail: { text } }));
+  },
   openUrl: async () => {},
   openPath: async () => {},
   revealItemInDir: async () => {},

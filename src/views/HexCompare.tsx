@@ -1,6 +1,6 @@
 import { createMemo, createResource, createSignal, Index, onCleanup, onMount, Show } from "solid-js";
 import { api, errText, fmtSize, type HexAlign, type HexAlignment } from "../api";
-import { Btn, editorRowHeight, PathBar, useViewport } from "../components/common";
+import { Btn, editorRowHeight, PathBar, usePaneFocus, useViewport } from "../components/common";
 import { promptText } from "../components/Prompt";
 import { displayKeys, registerCommands } from "../commands";
 import { showContextMenu } from "../components/ContextMenu";
@@ -116,6 +116,7 @@ export default function HexCompare(props: { tab: Tab; active: boolean }) {
   const [filter, setFilter] = createSignal<"all" | "diffs" | "same">("all");
   const [cursor, setCursor] = createSignal(-1);
   const [ctxSide, setCtxSide] = createSignal<0 | 1>(0);
+  const paneFocus = usePaneFocus<0 | 1>(0, setCtxSide);
   const hexOpts = () => (tab().options.hex as { align?: HexAlign } | undefined) ?? {};
   const align = (): HexAlign => hexOpts().align ?? "complete";
   const setAlign = (a: HexAlign) => {
@@ -280,7 +281,8 @@ export default function HexCompare(props: { tab: Tab; active: boolean }) {
     ...externalCommands(() => tab().paths[ctxSide()] || undefined),
   ]);
   const onContext = (e: MouseEvent) => {
-    setCtxSide(sideOf(e));
+    const side = e.detail === 0 ? paneFocus.focused() : sideOf(e);
+    paneFocus.focus(side, scroller);
     showContextMenu(e, tab().id, ["next-diff", "prev-diff", "-", "goto", "-", "show-all", "show-diffs", "show-same", "-", "width-8", "width-16", "width-32", "-", "align-none", "align-fast", "align-complete", "-", "reload", "swap", "-", "open-default", "reveal"]);
   };
 
@@ -311,7 +313,7 @@ export default function HexCompare(props: { tab: Tab; active: boolean }) {
       chars.push(<span class={cls}>{off != null ? printable(b) : " "}</span>);
     }
     return (
-      <div class="hside">
+      <div class="hside" {...paneFocus.paneProps(which, { tabIndex: -1, target: () => scroller, preventDefault: true })}>
         <span class="hoff">{base.toString(16).padStart(8, "0").toUpperCase()}</span>
         <span class="hbytes">{cells}</span>
         <span class="hchars">{chars}</span>
@@ -366,7 +368,14 @@ export default function HexCompare(props: { tab: Tab; active: boolean }) {
       <Show when={hd() && hd()!.align !== align()}>
         <div class="banner">Files are too large to align in memory; showing a positional comparison.</div>
       </Show>
-      <div class="hscroll" ref={scroller} onContextMenu={onContext} onScroll={(e) => vp.setScrollTop(e.currentTarget.scrollTop)}>
+      <div
+        class="hscroll"
+        ref={scroller}
+        tabIndex={0}
+        {...paneFocus.sharedPaneProps()}
+        onContextMenu={onContext}
+        onScroll={(e) => vp.setScrollTop(e.currentTarget.scrollTop)}
+      >
         <div style={{ height: `${rows().count * editorRowHeight()}px`, position: "relative" }}>
           <Index each={win()}>
             {(i) => (

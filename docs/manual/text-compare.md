@@ -100,6 +100,7 @@ Right-click the gutter to see the copy commands for that side.
 - `Shift`+click, or `Shift`+Up and `Shift`+Down, extends the selection to a range of lines.
 - Dragging over text with the mouse selects every line the selection touches, so the gutter arrows and the copy commands act on those lines rather than on the whole difference section. Copying works line by line, so a selection that starts or ends in the middle of a line copies that entire line.
 - **Edit > Select Section** (`Ctrl+D`) selects every line of the current difference section.
+- **Edit > Select All** (`Ctrl+A`) selects every line of the focused side, even lines hidden by a filter; **Copy** (`Ctrl+C`) then copies only that side. The difference map has no selection of its own, so `Ctrl+A` there does nothing.
 
 ## Edit the text
 
@@ -206,7 +207,7 @@ Select some lines and choose **Edit > Compare Selection to Clipboard**. A new Te
 
 ## Context menu
 
-Right-click a line to open the context menu. It contains **Align With**, **Isolate**, **Replacement**, the copy and indent commands, **Cut**, **Copy**, **Paste**, **Delete**, **Select Section**, **Compare Selection to Clipboard**, **Ignored**, **Open File**, **Open Clipboard**, **Open With**, **Save File** and **Save File As…**.
+Right-click a line to open the context menu. It contains **Align With**, **Isolate**, **Replacement**, the copy and indent commands, **Cut**, **Copy**, **Paste**, **Select All**, **Delete**, **Select Section**, **Compare Selection to Clipboard**, **Ignored**, **Open File**, **Open Clipboard**, **Open With**, **Save File** and **Save File As…**.
 
 ## Encodings and line endings
 

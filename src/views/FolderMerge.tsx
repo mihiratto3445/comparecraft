@@ -1,7 +1,7 @@
 import { ask } from "../host";
 import { batch, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import { api, errText, fmtSize, fmtTime, joinPath, type Action, type FolderMergeResult, type FolderOptions, type MergeItem, type MergeStatus, type Side } from "../api";
-import { Btn, PathBar } from "../components/common";
+import { Btn, PathBar, usePaneFocus } from "../components/common";
 import { displayKeys, registerCommands, type Command } from "../commands";
 import { showContextMenu } from "../components/ContextMenu";
 import type { InfoGroup } from "../components/InfoDialog";
@@ -58,6 +58,7 @@ export default function FolderMerge(props: { tab: Tab; active: boolean }) {
   const [filter, setFilter] = createSignal<Filter>((tab().options.mergeFilter as Filter) ?? "all");
   const [sel, setSel] = createSignal<Set<string>>(new Set());
   const [anchor, setAnchor] = createSignal<string | null>(null);
+  const paneFocus = usePaneFocus<"rows">("rows");
 
   const ready = () => !!left() && !!right();
   async function refresh() {
@@ -286,7 +287,7 @@ export default function FolderMerge(props: { tab: Tab; active: boolean }) {
       <Show when={error()}>
         <div class="banner err">{error()}</div>
       </Show>
-      <div class="fm-list" tabIndex={0}>
+      <div class="fm-list" {...paneFocus.paneProps("rows")}>
         <div class="fm-row fm-head">
           <span>Name</span>
           <span>Status</span>

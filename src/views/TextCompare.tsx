@@ -2,7 +2,7 @@ import { ask, emit, isEmbedded, listen, open as openDialog, save as saveDialog, 
 import { settings } from "../settings";
 import { batch, createEffect, createMemo, createSignal, For, Index, on, onCleanup, onMount, Show } from "solid-js";
 import { api, basename, defaultRules, errText, fmtSize, fmtTime, type DiffResult, type Row, type Rules, type TextFile } from "../api";
-import { Btn, editorRowHeight, Highlighted, Modal, PathBar, useViewport } from "../components/common";
+import { Btn, editorRowHeight, Highlighted, Modal, PathBar, usePaneFocus, useViewport } from "../components/common";
 import { showContextMenu } from "../components/ContextMenu";
 import { externalCommands, shellWords } from "../components/external";
 import FindBar from "../components/FindBar";
@@ -124,6 +124,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
   const [cur, setCur] = createSignal(-1);
   const [selRow, setSelRow] = createSignal(-1);
   const [selSide, setSelSide] = createSignal<Side>(0);
+  const paneFocus = usePaneFocus<Side>(0, setSelSide);
   /** Other end of a line (row range) selection, or -1 when only the caret row is selected. */
   const [selAnchor, setSelAnchor] = createSignal(-1);
   const [cuts, setCuts] = createSignal<Cut[]>([]);
@@ -499,6 +500,13 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
   }
 
   function overviewKey(event: KeyboardEvent) {
+    // The map has no side-specific selection, so consume Ctrl+A instead of forwarding it to a text pane.
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      event.stopPropagation();
+      window.getSelection()?.removeAllRanges();
+      return;
+    }
     let target: number;
     switch (event.key) {
       case "ArrowUp": target = vp.scrollTop() - editorRowHeight(); break;
@@ -611,7 +619,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     const r = selRow();
     const a = selAnchor();
     if (r < 0) return [0, -1];
-    return a < 0 ? [r, r] : [Math.min(a, r), Math.max(a, r)];
+    return a < 0 ? [r, r] : [Math.min(a, r), Math.min(Math.max(a, r), (result()?.rows.length ?? 1) - 1)];
   };
   const hasLineSel = () => selAnchor() >= 0 && selRow() >= 0;
   const inSel = (ri: number) => {
@@ -993,11 +1001,19 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
 
   const anyDirty = () => dirty()[0] || dirty()[1];
   const hasSel = () => selRow() >= 0;
-  /** Text selected with the mouse, or else the selected lines of the selected side. */
+  /** Mouse-selected text inside the active pane, or else the selected lines of that side. */
   function selectionText(): string {
-    const t = window.getSelection()?.toString() ?? "";
-    if (t) return t;
     const s = selSide();
+    const pane = s === 0 ? paneL : paneR;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      // A document-wide selection (e.g. Ctrl+A on the overview map) must not hijack Copy.
+      if (pane.contains(range.commonAncestorContainer)) {
+        const text = sel.toString();
+        if (text) return text;
+      }
+    }
     return selLines(s).map((i) => lines(s)[i] ?? "").join("\n");
   }
   async function copyText() {
@@ -1059,6 +1075,27 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     snapshot();
     editLines(s, arr);
     recompute(true);
+  }
+
+  const sideLineCount = (s: Side) => (s === 0 ? L() : R()).length;
+
+  /**
+   * "Select All": selects every line of the focused side, including lines hidden
+   * by a filter, by selecting the whole line range on that side.
+   */
+  function selectAll() {
+    const side = paneFocus.focused();
+    const count = sideLineCount(side);
+    if (!count) return;
+    batch(() => {
+      setSelSide(side);
+      setSelAnchor(0);
+      setSelRow((result()?.rows.length ?? 1) - 1);
+      setCur(-1);
+      setFilter("all");
+    });
+    // Copy uses the line selection; never leave a document-wide DOM selection behind.
+    window.getSelection()?.removeAllRanges();
   }
 
   /** "Select Section": selects every row of the current difference section. */
@@ -1192,7 +1229,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     s === 0 ? "copy-right" : "copy-left",
     s === 0 ? "copy-line-right" : "copy-line-left",
     "indent-inc", "indent-dec", "-",
-    "cut", "copy-text", "paste", "delete", "-",
+    "cut", "copy-text", "paste", "select-all", "delete", "-",
     "select-section", "compare-clipboard", "-",
     "ignored", "-",
     "open", "open-clipboard", "open-with",
@@ -1252,6 +1289,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     { id: "paste", menu: "Edit", group: "clip", label: "Paste", keys: "Ctrl+V", enabled: () => !readOnly(selSide()), run: paste },
     { id: "delete", menu: "Edit", group: "clip", label: "Delete", keys: "Del", enabled: () => selLines(selSide()).length > 0 && !readOnly(selSide()) && !editing(), run: deleteLine },
     { id: "select-section", menu: "Edit", group: "sel", label: "Select Section", keys: "Ctrl+D", enabled: () => curHunk() >= 0, run: selectSection },
+    { id: "select-all", menu: "Edit", group: "sel", label: "Select All", keys: "Ctrl+A", enabled: () => sideLineCount(paneFocus.focused()) > 0, run: selectAll },
     { id: "compare-clipboard", menu: "Edit", group: "sel", label: "Compare Selection to Clipboard", enabled: () => hasLineSel(), run: compareToClipboard },
     { id: "align-with", menu: "Edit", group: "align", label: "Align With…", keys: "F7", caption: () => (alignFrom() ? "Align With" : "Align With…"), enabled: hasSel, run: alignWith },
     { id: "isolate", menu: "Edit", group: "align", label: "Isolate", enabled: () => hasLineSel() && selLines(selSide()).length > 0, run: isolate },
@@ -1278,8 +1316,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     { id: "prev-diff", menu: "Search", group: "diff", label: "Previous Difference Section", keys: "Ctrl+P", altKeys: ["Shift+Ctrl+P"], run: () => nextHunk(-1) },
     { id: "next-exists", menu: "Search", group: "line", label: "Next Existing Line", keys: "Alt+Down", run: () => nextExisting(1) },
     { id: "prev-exists", menu: "Search", group: "line", label: "Previous Existing Line", keys: "Alt+Up", run: () => nextExisting(-1) },
-    { id: "go-left", menu: "Search", group: "line", label: "Go Left", keys: "Alt+Left", run: () => setSelSide(0) },
-    { id: "go-right", menu: "Search", group: "line", label: "Go Right", keys: "Alt+Right", run: () => setSelSide(1) },
+    { id: "go-left", menu: "Search", group: "line", label: "Go Left", keys: "Alt+Left", run: () => paneFocus.focus(0, paneL) },
+    { id: "go-right", menu: "Search", group: "line", label: "Go Right", keys: "Alt+Right", run: () => paneFocus.focus(1, paneR) },
     { id: "goto", menu: "Search", group: "line", label: "Go To Line…", keys: "Ctrl+G", run: goToLine },
     { id: "find", menu: "Search", group: "find", label: "Find…", keys: "Ctrl+F", inInputs: true, run: () => (setFindOpen(true), findInput?.focus(), findInput?.select()) },
     { id: "find-next", menu: "Search", group: "find", label: "Find Next", keys: "F3", run: () => find(1) },
@@ -1328,6 +1366,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
         class="tpane"
         id={`text-pane-${tab().id}-${s}`}
         ref={(el) => (s === 0 ? (paneL = el) : (paneR = el))}
+        {...paneFocus.paneProps(s)}
         onScroll={(e) => onScroll(e.currentTarget, s === 0 ? paneR : paneL)}
       >
         <div

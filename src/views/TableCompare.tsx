@@ -2,7 +2,7 @@ import { writeText } from "../host";
 import { batch, createEffect, createMemo, createSignal, For, Index, on, onCleanup, onMount, Show } from "solid-js";
 import { createStore } from "solid-js/store";
 import { api, errText, type TableOptions, type TableResult, type TableRow } from "../api";
-import { Btn, editorRowHeight, PathBar, useViewport } from "../components/common";
+import { Btn, editorRowHeight, PathBar, usePaneFocus, useViewport } from "../components/common";
 import { displayKeys, registerCommands, type Command, type MenuRef } from "../commands";
 import { showContextMenu } from "../components/ContextMenu";
 import { externalCommands } from "../components/external";
@@ -57,6 +57,7 @@ export default function TableCompare(props: { tab: Tab; active: boolean }) {
   const [sel, setSel] = createSignal(-1);
   const [anchor, setAnchor] = createSignal(-1);
   const [selSide, setSelSide] = createSignal<0 | 1>(0);
+  const paneFocus = usePaneFocus<0 | 1>(0, setSelSide);
   const [split, setSplit] = createSignal((tab().options.tableSplit as number) ?? 50);
 
   createEffect(
@@ -132,7 +133,9 @@ export default function TableCompare(props: { tab: Tab; active: boolean }) {
   function swap() {
     batch(() => {
       updateTab(tab().id, { paths: [right(), left()], titles: [tab().titles?.[1] ?? null, tab().titles?.[0] ?? null] });
-      setSelSide(selSide() === 0 ? 1 : 0);
+      const next = selSide() === 0 ? 1 : 0;
+      paneFocus.focus(next, next === 0 ? scroller : rightPane);
+      setSelSide(next);
     });
     void refresh();
   }
@@ -194,6 +197,15 @@ export default function TableCompare(props: { tab: Tab; active: boolean }) {
     return list.slice(Math.min(a, b), Math.max(a, b) + 1);
   });
 
+  function selectAll() {
+    const list = rows();
+    if (!list.length) return;
+    batch(() => {
+      setAnchor(list[0]);
+      setSel(list[list.length - 1]);
+    });
+  }
+
   async function copy() {
     const r = result();
     if (!r || !selected().length) return;
@@ -252,6 +264,7 @@ export default function TableCompare(props: { tab: Tab; active: boolean }) {
     { id: "as-text", menu: "Session", hidden: true, label: "Text Compare", enabled: () => !!left() && !!right(), run: () => openTab({ kind: "text", paths: [left(), right()] }) },
     { id: "as-hex", menu: "Session", hidden: true, label: "Hex Compare", enabled: () => !!left() && !!right(), run: () => openTab({ kind: "hex", paths: [left(), right()] }) },
     { id: "copy", menu: "Edit", group: "clip", label: "Copy", keys: "Ctrl+C", altKeys: ["Ctrl+Insert"], enabled: () => selected().length > 0, run: copy },
+    { id: "select-all", menu: "Edit", group: "sel", label: "Select All", keys: "Ctrl+A", enabled: () => rows().length > 0, run: selectAll },
     { id: "next-diff", menu: "Search", group: "diff", label: "Next Difference", keys: "Ctrl+N", altKeys: ["Alt+Down"], run: () => nav(1) },
     { id: "prev-diff", menu: "Search", group: "diff", label: "Previous Difference", keys: "Ctrl+P", altKeys: ["Alt+Up"], run: () => nav(-1) },
     { id: "row-up", menu: "Search", hidden: true, label: "Row Up", keys: "Up", run: () => move(-1) },
@@ -268,7 +281,7 @@ export default function TableCompare(props: { tab: Tab; active: boolean }) {
   ]);
   const onContext = (e: MouseEvent) => {
     showContextMenu(e, tab().id, [
-      "copy", "-", "next-diff", "prev-diff", "-", "show-all", "show-diffs", "show-same", "ignore-unimp", "-", "reload", "swap", "-", "open-default", "reveal",
+      "copy", "select-all", "-", "next-diff", "prev-diff", "-", "show-all", "show-diffs", "show-same", "ignore-unimp", "-", "reload", "swap", "-", "open-default", "reveal",
     ]);
   };
   const onHeaderContext = (e: MouseEvent, c: number) => {
@@ -462,6 +475,7 @@ export default function TableCompare(props: { tab: Tab; active: boolean }) {
                 class="tscroll tpane2"
                 style={s === 0 ? { flex: `0 0 calc(${split()}% - 3px)` } : undefined}
                 ref={(el) => (s === 0 ? (scroller = el) : (rightPane = el))}
+                {...paneFocus.paneProps(s)}
                 onScroll={(e) => onPaneScroll(e.currentTarget, s === 0 ? rightPane : scroller)}
               >
                 <div class="theader" style={{ width: `${gridWidth()}px` }}>

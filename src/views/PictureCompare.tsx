@@ -1,6 +1,6 @@
 import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { api, errText, fmtSize, type PixMode, type PixOptions, type PixResult } from "../api";
-import { Btn, PathBar } from "../components/common";
+import { Btn, PathBar, usePaneFocus } from "../components/common";
 import { displayKeys, registerCommands } from "../commands";
 import { showContextMenu } from "../components/ContextMenu";
 import { externalCommands } from "../components/external";
@@ -96,6 +96,9 @@ export default function PictureCompare(props: { tab: Tab; active: boolean }) {
   const [zoom, setZoom] = createSignal(1);
   const [fit, setFit] = createSignal(false);
   const [side, setSide] = createSignal<0 | 1>(0);
+  const paneFocus = usePaneFocus<0 | 1 | "diff">(0, (s) => {
+    if (s !== "diff") setSide(s);
+  });
   const [hover, setHover] = createSignal<{ x: number; y: number } | null>(null);
   const [pixels, setPixels] = createSignal<(ImageData | null)[]>([null, null]);
 
@@ -281,7 +284,8 @@ export default function PictureCompare(props: { tab: Tab; active: boolean }) {
   ]);
 
   const onContext = (e: MouseEvent, s: 0 | 1 | null) => {
-    if (s !== null) setSide(s);
+    if (s !== null) paneFocus.focus(s, panes[s]);
+    else paneFocus.focus("diff", panes[2]);
     const xform = s === null ? [] : ["rotate-cw", "rotate-ccw", "flip-h", "flip-v", "-"];
     const external = s === null ? [] : ["-", "open-default", "reveal"];
     showContextMenu(e, tab().id, [
@@ -359,8 +363,8 @@ export default function PictureCompare(props: { tab: Tab; active: boolean }) {
       class="pic-pane checker"
       classList={{ focused: side() === i }}
       ref={(el) => (panes[i] = el)}
+      {...paneFocus.paneProps(i)}
       onScroll={(e) => sync(e.currentTarget)}
-      onMouseDown={() => setSide(i)}
       onContextMenu={(e) => onContext(e, i)}
     >
       <Show when={errors()[i]}>
@@ -474,6 +478,7 @@ export default function PictureCompare(props: { tab: Tab; active: boolean }) {
               panes[2] = el;
               diffPane = el;
             }}
+            {...paneFocus.paneProps("diff")}
             onScroll={(e) => sync(e.currentTarget)}
             onContextMenu={(e) => onContext(e, null)}
           >

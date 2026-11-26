@@ -19,7 +19,7 @@ import {
   type ViewKind,
   type ReportRequest,
 } from "../api";
-import { Btn, editorRowHeight, Modal, PathBar, useViewport } from "../components/common";
+import { Btn, editorRowHeight, Modal, PathBar, usePaneFocus, useViewport } from "../components/common";
 import type { ComparisonListener } from "../comparisonStatus";
 import { showContextMenu } from "../components/ContextMenu";
 import { externalCommands, shellWords, sideOf } from "../components/external";
@@ -265,8 +265,9 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
   const log = (text: string) => setLogLines((l) => [...l, { t: Date.now(), text }].slice(-Math.max(50, settings.logMaxMessages)));
   const [sel, setSel] = createSignal<Set<string>>(new Set());
   const [anchor, setAnchor] = createSignal<string | null>(null);
-  // Side(s) the selection applies to: a click selects one side, Ctrl+click on the other side or Select All both.
+  // Selection may span both sides; focus separately identifies the pane that owns keyboard commands.
   const [selSide, setSelSide] = createSignal<SideName | "both">("left");
+  const paneFocus = usePaneFocus<SideName>("left");
   const [ignored, setIgnored] = createSignal<Set<string>>(new Set());
   const [history, setHistory] = createSignal<{ back: string[][]; fwd: string[][] }>({ back: [], fwd: [] });
   const [syncOpen, setSyncOpen] = createSignal(tab().kind === "sync");
@@ -628,6 +629,7 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
 
   function click(e: MouseEvent, rel: string, index: number) {
     const side: SideName = sideOf(e) === 0 ? "left" : "right";
+    paneFocus.focus(side, scroller);
     // Right-click keeps an existing selection on that side so its popup acts on all of it.
     if (e.button === 2 && sel().has(rel) && (selSide() === "both" || selSide() === side)) return;
     if (e.button === 2) {
@@ -1341,7 +1343,11 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
       // Land on the side that has an item, so actions apply to something.
       const n = rows[i].node;
       const s = selSide();
-      if (s !== "both" && !n[s]) setSelSide(s === "left" ? "right" : "left");
+      if (s !== "both" && !n[s]) {
+        const next = s === "left" ? "right" : "left";
+        setSelSide(next);
+        paneFocus.focus(next, scroller);
+      }
     }
     setAnchor(rel);
     const top = i * editorRowHeight();
@@ -1673,8 +1679,8 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
     // Edit
     { id: "expand", menu: "Edit", group: "tree", label: "Expand All", enabled: () => !!result(), run: () => expandAll() },
     { id: "collapse", menu: "Edit", group: "tree", label: "Collapse All", run: () => setExpanded(new Set<string>()) },
-    { id: "select-all", menu: "Edit", group: "sel", label: "Select All", keys: "Ctrl+A", run: () => selectWhere(() => true, "both") },
-    { id: "select-files", menu: "Edit", group: "sel", label: "Select All Files", keys: "Shift+Ctrl+A", run: () => selectWhere((n) => !n.dir, "both") },
+    { id: "select-all", menu: "Edit", group: "sel", label: "Select All", keys: "Ctrl+A", run: () => selectWhere(() => true, paneFocus.focused()) },
+    { id: "select-files", menu: "Edit", group: "sel", label: "Select All Files", keys: "Shift+Ctrl+A", run: () => selectWhere((n) => !n.dir, paneFocus.focused()) },
     { id: "select-newer", menu: "Edit", group: "sel", label: "Select Newer", submenu: () => ["newer-left", "newer-right", "newer-both"], run: () => {} },
     { id: "newer-left", menu: "Edit", hidden: true, label: "Left", run: () => selectWhere((n) => statusOf(n) === "diff" && n.newer === "left", "left") },
     { id: "newer-right", menu: "Edit", hidden: true, label: "Right", run: () => selectWhere((n) => statusOf(n) === "diff" && n.newer === "right", "right") },
@@ -1730,8 +1736,8 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
     { id: "last", menu: "Search", hidden: true, label: "Last Row", keys: "End", run: () => selectIndex(flat().length - 1) },
     // Enter runs the bold default item: open/close a single folder, otherwise open.
     { id: "activate", menu: "Actions", hidden: true, label: "Open", keys: "Enter", enabled: () => effSel().length > 0, run: () => (singleFolder() ? toggle(single()!.rel) : openSelected()) },
-    { id: "side-left", menu: "Search", hidden: true, label: "Select Left Side", keys: "Ctrl+Left", run: () => setSelSide("left") },
-    { id: "side-right", menu: "Search", hidden: true, label: "Select Right Side", keys: "Ctrl+Right", run: () => setSelSide("right") },
+    { id: "side-left", menu: "Search", hidden: true, label: "Select Left Side", keys: "Ctrl+Left", run: () => (paneFocus.focus("left", scroller), setSelSide("left")) },
+    { id: "side-right", menu: "Search", hidden: true, label: "Select Right Side", keys: "Ctrl+Right", run: () => (paneFocus.focus("right", scroller), setSelSide("right")) },
     {
       id: "expand-one", menu: "Edit", hidden: true, label: "Expand Folder", keys: "Right",
       run: () => { const n = flat()[cursor()]?.node; if (n?.dir && !expanded().has(n.rel)) toggle(n.rel); },
@@ -1778,11 +1784,23 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
       return "";
     };
     return (
-      <div class={`fside ${cls()}`} classList={{ selc: sel().has(n.rel) && sidesOn().includes(side), ign: ignored().has(n.rel), cto: cmpFrom()?.rel === n.rel && cmpFrom()?.side === side }}>
+      <div
+        class={`fside ${cls()}`}
+        classList={{ selc: sel().has(n.rel) && sidesOn().includes(side), ign: ignored().has(n.rel), cto: cmpFrom()?.rel === n.rel && cmpFrom()?.side === side }}
+        {...paneFocus.paneProps(side, { tabIndex: -1, target: () => scroller, preventDefault: true })}
+      >
         <span class="fname" style={{ "padding-left": `${depth * 16 + 4}px` }}>
           <Show when={s}>
             <Show when={n.dir} fallback={<span class="ficon">📄</span>}>
-              <span class="twisty" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => (e.stopPropagation(), toggle(n.rel))}>
+              <span
+                class="twisty"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  paneFocus.focus(side, scroller);
+                }}
+                onClick={(e) => (e.stopPropagation(), toggle(n.rel))}
+              >
                 {expanded().has(n.rel) ? "▾" : "▸"}
               </span>
               <span class="ficon">📁</span>
@@ -1929,11 +1947,15 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
         class="fscroll"
         classList={{ picking: !!cmpFrom() }}
         ref={scroller}
+        tabIndex={0}
+        {...paneFocus.sharedPaneProps()}
         onMouseDown={(e) => {
           // A click on the empty area clears the selection; New Folder then targets the clicked side's base folder.
           if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.filler) {
+            const side: SideName = sideOf(e) === 0 ? "left" : "right";
+            paneFocus.focus(side, scroller);
             setSel(new Set<string>());
-            setSelSide(sideOf(e) === 0 ? "left" : "right");
+            setSelSide(side);
           }
         }}
         onContextMenu={(e) => showContextMenu(e, tab().id, BACKGROUND_MENU)}
