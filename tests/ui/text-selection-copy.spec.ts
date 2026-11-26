@@ -85,3 +85,26 @@ test("Ctrl+A selects and copies only the active pane", async ({ page, folders })
   await page.keyboard.press("Control+c");
   await expect.poll(() => copiedText(page)).toEqual(["ONE\nTWO\nTHREE\nfour", "one\ntwo\nthree\nfour"]);
 });
+
+test("an inactive text tab ignores selection changes elsewhere in the app", async ({ page, folders }) => {
+  await open(page, folders);
+  // The active tab has a one-line selection anchored on the right pane.
+  await dragRight(page, 1);
+  await expect(rightPane(page).locator(".trow.rsel")).toHaveCount(1);
+
+  // Open a second text tab; it becomes active while the original stays mounted but hidden.
+  await folders.pair("other.txt", "alpha\nbeta\n", "ALPHA\nBETA\n");
+  await page.evaluate((paths) => window.dispatchEvent(new CustomEvent("comparecraft-test-event", {
+    detail: { name: "launch", payload: { kind: "text", paths, titles: [null, null], readOnly: [false, false], filters: null } },
+  })), [join(folders.left, "other.txt"), join(folders.right, "other.txt")]);
+  await expect(page.locator(".tab-view:visible .trow").first()).toHaveText(/alpha|ALPHA/);
+
+  // Selecting text in the new tab must not change the hidden tab's line selection.
+  const other = page.locator(".tab-view:visible .tpane").nth(1);
+  await dragRight(page, 2);
+  await expect(other.locator(".trow.rsel")).toHaveCount(2);
+
+  // Switch back: the first tab still shows its single selected line.
+  await page.locator(".tab").filter({ hasText: "select.txt" }).click();
+  await expect(rightPane(page).locator(".trow.rsel")).toHaveCount(1);
+});
