@@ -27,6 +27,8 @@ When saving, CompareCraft keeps the encoding, byte order mark and line ending st
 
 The tab width used to display tab characters is the **Tab size:** setting on the [Text Editing page of the Options](options.md#text-editing).
 
+**↩ Wrap** (**View > Word Wrap**) wraps long lines to fit the window instead of scrolling horizontally. It is off by default and is remembered per tab.
+
 ## View a patch
 
 A patch (or diff) file lists the changes between two versions of one or more files, as produced by version control tools. Text Patch displays it in a readable form. It is read-only.

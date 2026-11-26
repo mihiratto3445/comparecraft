@@ -668,6 +668,21 @@ button.link {
 .tx {
   white-space: pre;
 }
+/* Word wrap: a row spans its display segments; gutter and line number stay on the first. */
+.tcompare.wrapped .tpane {
+  overflow-x: hidden;
+}
+.tcompare.wrapped .tx {
+  display: flex;
+  flex-direction: column;
+}
+.txseg {
+  line-height: var(--editor-row-height, 20px);
+}
+.tcompare.wrapped .gbtn {
+  bottom: auto;
+  height: calc(var(--editor-row-height, 20px) - 4px);
+}
 .trow.filler,
 .mcell.filler,
 .tcell.filler {

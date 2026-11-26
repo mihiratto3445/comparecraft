@@ -14,6 +14,7 @@ import { textInfo } from "../components/InfoDialog";
 import { saveSession as saveNamedSession, sessionCommands } from "./sessionMenu";
 import { ReplacementDialog, RulesPanel } from "../components/RulesPanel";
 import { SessionButtons, SessionSaveButton } from "../components/SessionTools";
+import { monoCharWidth, wrapCount, wrapSegments } from "../wrap";
 
 type Side = 0 | 1;
 type Filter = "all" | "diffs" | "context" | "same";
@@ -115,6 +116,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
   const [errors, setErrors] = createSignal<[string, string]>(["", ""]);
   const [rules, setRules] = createSignal<Rules>({ ...defaultRules(), ...((tab().options.rules as Rules) ?? {}) });
   const [ignoreUnimportant, setIgnoreUnimportant] = createSignal((tab().options.ignoreUnimportant as boolean) ?? false);
+  const [wrap, setWrap] = createSignal((tab().options.wordWrap as boolean) ?? false);
   /** All three whitespace rules on: the "Ignore whitespace" toolbar toggle's state. */
   const wsIgnored = () => rules().ignoreLeadingWs && rules().ignoreTrailingWs && rules().ignoreEmbeddedWs;
   const [result, setResult] = createSignal<DiffResult | null>(null);
@@ -333,6 +335,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     recompute();
   }, { defer: true }));
   createEffect(on(ignoreUnimportant, (v) => updateTab(tab().id, { options: { ...tab().options, ignoreUnimportant: v } }), { defer: true }));
+  createEffect(on(wrap, (v) => updateTab(tab().id, { options: { ...tab().options, wordWrap: v } }), { defer: true }));
   createEffect(() => updateTab(tab().id, { dirty: dirty()[0] || dirty()[1] }));
 
   // Effective kind of a row given the "ignore unimportant" toggle.
@@ -381,7 +384,53 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
       return hunkActive(index) && end > start ? [{ index, start, end, important: hunk.important }] : [];
     });
   });
-  const contentHeight = () => Math.max(vp.height(), visible().length * editorRowHeight());
+
+  /** Gutter + line number chrome ahead of the text, matching the .tpane-inner width calc. */
+  const CHROME_PX = 82;
+  /** Columns of text that fit in a pane while wrapped; 0 keeps the unwrapped layout. */
+  const wrapCols = createMemo(() => {
+    if (!wrap() || !paneL) return 0;
+    // Track font settings so a font change re-measures and re-wraps.
+    void settings.editorFont;
+    void editorRowHeight();
+    const cs = getComputedStyle(paneL);
+    const font = cs.font || `${cs.fontSize} ${cs.fontFamily}`;
+    return Math.max(8, Math.floor((vp.width() - CHROME_PX) / monoCharWidth(font)));
+  });
+  /** Per-visible-row heights and offsets when wrapped; null keeps the uniform-height layout. */
+  const layout = createMemo(() => {
+    const cols = wrapCols();
+    const vis = visible();
+    const res = result();
+    if (!cols || !res) return null;
+    const rowH = editorRowHeight();
+    const tabW = settings.tabSize || 4;
+    const [l, r] = [L(), R()];
+    const heights: number[] = new Array(vis.length);
+    const offsets: number[] = new Array(vis.length + 1);
+    let total = 0;
+    for (let i = 0; i < vis.length; i++) {
+      const row = res.rows[vis[i]];
+      // Both sides share the taller segment count so aligned rows keep matching heights.
+      const n = Math.max(
+        row.l !== undefined ? wrapCount(l[row.l] ?? "", cols, tabW) : 1,
+        row.r !== undefined ? wrapCount(r[row.r] ?? "", cols, tabW) : 1,
+      );
+      heights[i] = n * rowH;
+      offsets[i] = total;
+      total += heights[i];
+    }
+    offsets[vis.length] = total;
+    return { heights, offsets, total };
+  });
+  const rowTop = (vi: number) => layout()?.offsets[vi] ?? vi * editorRowHeight();
+  const rowHeight = (vi: number) => layout()?.heights[vi] ?? editorRowHeight();
+  /** Visible row index at a scroll position. */
+  const rowAtScroll = (top: number) => {
+    const lay = layout();
+    return lay ? Math.max(0, lowerBound(lay.offsets, top + 1) - 1) : Math.floor(top / editorRowHeight());
+  };
+  const contentHeight = () => Math.max(vp.height(), layout()?.total ?? visible().length * editorRowHeight());
   const maxScroll = () => Math.max(0, contentHeight() - vp.height());
   const overviewArea = createMemo(() => {
     const track = mapViewport.height();
@@ -390,7 +439,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     return { top: maxScroll() ? scroll / maxScroll() * (track - height) : 0, height };
   });
 
-  createEffect(on([visible, vp.height, editorRowHeight], () => {
+  createEffect(on([visible, vp.height, editorRowHeight, layout], () => {
     queueMicrotask(() => {
       if (paneL?.isConnected && paneR?.isConnected && paneL.clientHeight > 0) scrollPanes(paneL.scrollTop);
     });
@@ -398,7 +447,12 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
 
   const windowRows = createMemo(() => {
     const vis = visible();
-    const { start, end } = vp.range(vis.length);
+    const lay = layout();
+    let start: number, end: number;
+    if (lay) {
+      start = Math.max(0, rowAtScroll(vp.scrollTop()) - 12);
+      end = Math.min(vis.length, lowerBound(lay.offsets, vp.scrollTop() + vp.height()) + 12);
+    } else ({ start, end } = vp.range(vis.length));
     const items: { vi: number; ri: number }[] = [];
     for (let i = start; i < end; i++) items.push({ vi: i, ri: vis[i] });
     return items;
@@ -456,7 +510,17 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
 
   function scrollToRow(ri: number) {
     const vi = lowerBound(visible(), ri);
-    scrollPanes(vi * editorRowHeight() - vp.height() / 3);
+    scrollPanes(rowTop(vi) - vp.height() / 3);
+  }
+
+  /** "Word Wrap": keeps the topmost visible row in view across the layout change. */
+  function toggleWrap() {
+    const vis = visible();
+    const ri = vis[Math.min(rowAtScroll(paneL.scrollTop), vis.length - 1)] ?? -1;
+    setWrap(!wrap());
+    queueMicrotask(() => {
+      if (ri >= 0) scrollPanes(rowTop(lowerBound(visible(), ri)));
+    });
   }
 
   function goHunk(h: number) {
@@ -474,7 +538,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     if (h < 0) {
       // Start from the current scroll position.
       const vis = visible();
-      const vi = Math.floor(vp.scrollTop() / editorRowHeight());
+      const vi = rowAtScroll(vp.scrollTop());
       const ri = vis[Math.min(vi, vis.length - 1)] ?? 0;
       h = dir === 1 ? -1 : res.hunks.length;
       for (let i = 0; i < res.hunks.length; i++) {
@@ -803,8 +867,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     });
     if (!visible().includes(ri)) setFilter("all");
     const vi = lowerBound(visible(), ri);
-    const top = vi * editorRowHeight();
-    if (top < paneL.scrollTop || top > paneL.scrollTop + vp.height() - editorRowHeight() * 2) scrollToRow(ri);
+    const top = rowTop(vi);
+    if (top < paneL.scrollTop || top > paneL.scrollTop + vp.height() - rowHeight(vi) - editorRowHeight()) scrollToRow(ri);
   }
 
   /** Up/Down (Shift extends the line selection). */
@@ -1169,6 +1233,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
     filterCmd("diffs", "Show Differences"),
     filterCmd("context", "Show Context"),
     filterCmd("same", "Show Same"),
+    { id: "word-wrap", menu: "View", group: "wrap", label: "Word Wrap", checked: wrap, run: toggleWrap },
     { id: "ignore-unimp", menu: "View", group: "rules", label: "Ignore Unimportant Differences", checked: ignoreUnimportant, run: () => setIgnoreUnimportant(!ignoreUnimportant()) },
   ]);
   const k = (id: string) => {
@@ -1212,7 +1277,10 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
       >
         <div
           class="tpane-inner"
-          style={{ height: `${visible().length * editorRowHeight()}px`, width: `calc(${(s === 0 ? maxL() : maxR()) + 2}ch + 82px)` }}
+          style={{
+            height: `${layout()?.total ?? visible().length * editorRowHeight()}px`,
+            width: wrap() ? "100%" : `calc(${(s === 0 ? maxL() : maxR()) + 2}ch + 82px)`,
+          }}
         >
           <Index each={windowRows()}>
             {(item) => {
@@ -1220,6 +1288,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
               const idx = () => row()[key];
               const k = () => kindOf(row());
               const isEditing = () => editing()?.ri === item().ri && editing()?.side === s;
+              /** Wrapped display segments of this side's line, with the diff highlights remapped. */
+              const segs = () => wrapSegments(lines(s)[idx()!] ?? "", wrapCols(), settings.tabSize || 4, k() === "same" ? undefined : row()[spansKey]);
               /**
                * Gutter copy button, as in the reference editor: on the first row of
                * each difference section, or (with a line selection) on the first
@@ -1245,7 +1315,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
                     "align-from": alignFrom()?.side === s && alignFrom()?.line === idx(),
                     "kb-target": item().ri === selRow() && s === selSide(),
                   }}
-                  style={{ top: `${item().vi * editorRowHeight()}px` }}
+                  style={{ top: `${rowTop(item().vi)}px`, height: wrap() ? `${rowHeight(item().vi)}px` : undefined }}
                   onMouseDown={(e) => {
                     const ri = item().ri;
                     // Keep a line selection for its context menu.
@@ -1301,13 +1371,20 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
                     when={isEditing()}
                     fallback={
                       <span class="tx">
-                        {idx() !== undefined && (
-                          <Highlighted
-                            text={lines(s)[idx()!] ?? ""}
-                            spans={k() === "same" ? undefined : row()[spansKey]}
-                            cls={row().k === "unimportant" ? "hl-u" : "hl"}
-                          />
-                        )}
+                        {idx() !== undefined &&
+                          (wrap() ? (
+                            segs().map((seg) => (
+                              <div class="txseg">
+                                <Highlighted text={seg.text} spans={seg.spans} cls={row().k === "unimportant" ? "hl-u" : "hl"} />
+                              </div>
+                            ))
+                          ) : (
+                            <Highlighted
+                              text={lines(s)[idx()!] ?? ""}
+                              spans={k() === "same" ? undefined : row()[spansKey]}
+                              cls={row().k === "unimportant" ? "hl-u" : "hl"}
+                            />
+                          ))}
                       </span>
                     }
                   >
@@ -1375,6 +1452,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
           ≈ Ignore whitespace
         </Btn>
         <Btn title="Comparison rules" onClick={() => setShowRules(!showRules())} active={showRules()}>⚙ Rules</Btn>
+        <Btn title="Wrap lines to fit the display" active={wrap()} onClick={toggleWrap}>↩ Wrap</Btn>
         <span class="sep" />
         <Btn title="Swap sides" onClick={swap}>⇄ Swap</Btn>
         <Btn title="Reload files" kbd={k("f5")} onClick={reload}>⟳ Refresh</Btn>
@@ -1408,7 +1486,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
         <PathBar value={tab().paths[0] ?? ""} title={tab().titles?.[0]} onCommit={(p) => changePath(0, p)} readOnly={readOnly(0)} dirty={dirty()[0]} info={sideInfo(0)} onSave={() => saveSide(0)} saveTitle="Save left file" />
         <PathBar value={tab().paths[1] ?? ""} title={tab().titles?.[1]} onCommit={(p) => changePath(1, p)} readOnly={readOnly(1)} dirty={dirty()[1]} info={sideInfo(1)} onSave={() => saveSide(1)} saveTitle="Save right file" />
       </div>
-      <div class="tcompare">
+      <div class="tcompare" classList={{ wrapped: wrap() }}>
         <div
           class="overview"
           ref={overview}
@@ -1430,7 +1508,10 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
               <div
                 class="ov-mark"
                 classList={{ imp: mark.important, cur: cur() === mark.index }}
-                style={{ top: `${mark.start / Math.max(1, visible().length) * 100}%`, height: `max(2px, ${(mark.end - mark.start) / Math.max(1, visible().length) * 100}%)` }}
+                style={{
+                  top: `${rowTop(mark.start) / Math.max(1, layout()?.total ?? visible().length * editorRowHeight()) * 100}%`,
+                  height: `max(2px, ${(rowTop(mark.end) - rowTop(mark.start)) / Math.max(1, layout()?.total ?? visible().length * editorRowHeight()) * 100}%)`,
+                }}
                 onClick={(event) => { event.stopPropagation(); if (event.button === 0) goHunk(mark.index); }}
               />
             )}
