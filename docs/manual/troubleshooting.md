@@ -111,7 +111,7 @@ Shortcuts belong to a view, and many commands are only available when something 
 
 The following are not implemented yet:
 
-- folder merge and three-way folder compare
+- three-way folder compare
 - source-control integration
 - media, registry and version-information compare; picture metadata compare
 - archives as folders; FTP/SFTP and cloud locations
