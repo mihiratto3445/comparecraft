@@ -21,7 +21,7 @@ If one of the files contains binary data, a banner says "One of the files looks 
 - The **path bars**. Each shows the file path, a **💾** button to save that side, a **RO** badge if the file is read-only, and a **●** badge when the side has unsaved changes. Below the path, a line shows the file size, modification time, encoding (with "BOM" if the file has a byte order mark) and line ending style.
 - The **difference map** at the far left: a narrow strip that shows where differences occur among the displayed lines. A bordered, translucent highlight shows the area currently visible in the text panes. Click a difference mark to select and jump to that section, or click empty space in the strip to center that location in both panes.
 - The **two text panes**, each with a gutter, line numbers and the text.
-- The **details pane** at the bottom, which shows the selected line from both sides, one above the other, so you can see small differences in long lines. Until you select a line it says "Select a line to see details. Double-click a line to edit it."
+- The **details pane** at the bottom, which shows the selected line from both sides, one above the other, so you can see small differences in long lines. Until you select a line it says "Select a line to see details. Click it again or just start typing to edit."
 - The **status bar**, which summarizes the result: "Files are identical", "Only unimportant differences (N sections)" or "N difference sections, M unimportant".
 
 ## Read the differences
@@ -105,7 +105,7 @@ Right-click the gutter to see the copy commands for that side.
 
 Both sides can be edited, unless a file is read-only:
 
-- Double-click a line, or select it and press `F2` (**Edit > Edit Line**), to edit it in place. Press `Enter` to accept the change or `Esc` to cancel.
+- Click a line and just start typing: the character you type is inserted where you clicked and the line opens for editing in place. Clicking the selected line again, double-clicking any line, or pressing `F2` (**Edit > Edit Line**) opens the same editor with the whole line. Press `Enter` to accept the change or `Esc` to cancel.
 - **+ Line** (`Ctrl+Enter`, **Edit > Insert Line After**) inserts an empty line after the selected line. **Edit > Insert Line Before** (`Shift+Ctrl+Enter`) inserts one before it.
 - **− Line** (`Del`, **Edit > Delete**) deletes the selected lines.
 - **Edit > Cut** (`Ctrl+X`), **Copy** (`Ctrl+C`) and **Paste** (`Ctrl+V`) work on the selected lines.
