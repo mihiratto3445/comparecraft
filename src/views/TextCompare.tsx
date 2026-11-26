@@ -115,6 +115,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
   const [errors, setErrors] = createSignal<[string, string]>(["", ""]);
   const [rules, setRules] = createSignal<Rules>({ ...defaultRules(), ...((tab().options.rules as Rules) ?? {}) });
   const [ignoreUnimportant, setIgnoreUnimportant] = createSignal((tab().options.ignoreUnimportant as boolean) ?? false);
+  /** All three whitespace rules on: the "Ignore whitespace" toolbar toggle's state. */
+  const wsIgnored = () => rules().ignoreLeadingWs && rules().ignoreTrailingWs && rules().ignoreEmbeddedWs;
   const [result, setResult] = createSignal<DiffResult | null>(null);
   const [filter, setFilter] = createSignal<Filter>("all");
   const [cur, setCur] = createSignal(-1);
@@ -1360,6 +1362,17 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
           onClick={() => setIgnoreUnimportant(!ignoreUnimportant())}
         >
           ≈ Ignore unimportant
+        </Btn>
+        <Btn
+          title="Ignore differences that are only whitespace: turns on the three whitespace rules and Ignore unimportant (CRLF and LF always match)"
+          active={ignoreUnimportant() && wsIgnored()}
+          onClick={() => {
+            const on = !(ignoreUnimportant() && wsIgnored());
+            setRules({ ...rules(), ignoreLeadingWs: on, ignoreTrailingWs: on, ignoreEmbeddedWs: on });
+            if (on) setIgnoreUnimportant(true);
+          }}
+        >
+          ≈ Ignore whitespace
         </Btn>
         <Btn title="Comparison rules" onClick={() => setShowRules(!showRules())} active={showRules()}>⚙ Rules</Btn>
         <span class="sep" />

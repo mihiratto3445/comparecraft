@@ -6,7 +6,7 @@ import { BackendClient } from "../../extensions/vscode/src/backend";
 import type { FNode, FolderResult, Summary } from "../../src/api";
 
 async function folderResult(left: string, right: string, options: { dotNamesFirst?: boolean }): Promise<FolderResult> {
-  const summary: Summary = { files: 0, same: 0, similar: 0, diff: 0, leftOnly: 0, rightOnly: 0, errors: 0 };
+  const summary: Summary = { files: 0, same: 0, similar: 0, diff: 0, leftOnly: 0, rightOnly: 0, moved: 0, errors: 0 };
   const walk = async (rel: string): Promise<FNode[]> => {
     const names = [...new Set([...await readdir(join(left, rel)), ...await readdir(join(right, rel))])].sort();
     const nodes = await Promise.all(names.map(async (name): Promise<FNode> => {

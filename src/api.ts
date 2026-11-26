@@ -146,6 +146,10 @@ export interface FolderOptions {
   ignoreDst?: boolean;
   /** Timestamps a whole number of hours apart are equal. */
   ignoreTz?: boolean;
+  /** Mark one-sided files whose identical content sits at another path as moved/renamed. */
+  detectMoves?: boolean;
+  /** Skip items excluded by .gitignore files (and the .git folder). */
+  useGitignore?: boolean;
 }
 export interface FolderComparisonProgress {
   requestId: string;
@@ -195,6 +199,8 @@ export interface FNode {
   status: Status;
   newer?: "left" | "right";
   error?: string;
+  /** Orphan whose identical content exists on the other side: that item's relative path. */
+  moved?: string;
   /** Set when the criteria compared the files' contents. */
   content?: ContentVerdict;
   children?: FNode[];
@@ -209,6 +215,8 @@ export interface Summary {
   diff: number;
   leftOnly: number;
   rightOnly: number;
+  /** Moved/renamed pairs (counted once per pair). */
+  moved: number;
   errors: number;
 }
 export interface FolderResult {

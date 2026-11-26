@@ -300,6 +300,18 @@ export default function FolderSettingsDialog(props: {
               </select>
               <button onClick={() => setPresetName("")}>Add To Presets…</button>
             </div>
+            {group("Reducing noise",
+              <>
+                <label class="opt-check">
+                  <input type="checkbox" checked={o.detectMoves !== false} onChange={(e) => setO("detectMoves", e.currentTarget.checked)} /> Detect moved and renamed files
+                </label>
+                <p class="muted small">One-sided files whose identical content sits at another path are marked as moved instead of counted as deleted plus added.</p>
+                <label class="opt-check">
+                  <input type="checkbox" checked={!!o.useGitignore} onChange={(e) => setO("useGitignore", e.currentTarget.checked)} /> Skip items excluded by .gitignore
+                </label>
+                <p class="muted small">Reads <code>.gitignore</code> files in both trees (nested files override their parents, <code>!</code> re-includes) and always skips the <code>.git</code> folder.</p>
+              </>,
+            )}
             <Show when={presetName() !== null}>
               {group("Add to presets",
                 <div class="opt-row">
