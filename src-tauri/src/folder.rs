@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize)]
@@ -240,48 +240,73 @@ pub struct FolderResult {
     pub summary: Summary,
 }
 
+fn lower_chars(s: &str) -> Vec<char> {
+    s.to_lowercase().chars().collect()
+}
+
+/// Case-insensitive glob match supporting `*` and `?`, compiled once per mask.
+struct Glob {
+    chars: Vec<char>,
+    /// "*" matches everything.
+    all: bool,
+    /// "*." selects names without an extension, as in the reference tool's filters.
+    no_ext: bool,
+}
+
+impl Glob {
+    fn new(pattern: &str) -> Glob {
+        Glob { chars: lower_chars(pattern), all: pattern == "*", no_ext: pattern == "*." }
+    }
+
+    /// `n` is the already lowercased name.
+    fn matches(&self, n: &[char]) -> bool {
+        if self.all {
+            return true;
+        }
+        if self.no_ext {
+            return !n.contains(&'.');
+        }
+        let p = &self.chars;
+        let (mut pi, mut ni) = (0usize, 0usize);
+        let (mut star, mut mark) = (None, 0usize);
+        while ni < n.len() {
+            if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+                pi += 1;
+                ni += 1;
+            } else if pi < p.len() && p[pi] == '*' {
+                star = Some(pi);
+                mark = ni;
+                pi += 1;
+            } else if let Some(s) = star {
+                pi = s + 1;
+                mark += 1;
+                ni = mark;
+            } else {
+                return false;
+            }
+        }
+        while pi < p.len() && p[pi] == '*' {
+            pi += 1;
+        }
+        pi == p.len()
+    }
+}
+
 /// Case-insensitive glob match supporting `*` and `?`.
 pub fn glob_match(pattern: &str, name: &str) -> bool {
-    // "*." selects names without an extension, as in the reference tool's filters.
-    if pattern == "*." {
-        return !name.contains('.');
-    }
-    let p: Vec<char> = pattern.to_lowercase().chars().collect();
-    let n: Vec<char> = name.to_lowercase().chars().collect();
-    let (mut pi, mut ni) = (0usize, 0usize);
-    let (mut star, mut mark) = (None, 0usize);
-    while ni < n.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
-            pi += 1;
-            ni += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ni;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ni = mark;
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
+    Glob::new(pattern).matches(&lower_chars(name))
 }
 
 struct Masks {
-    include: Vec<String>,
-    exclude_files: Vec<String>,
-    exclude_dirs: Vec<String>,
+    include: Vec<Glob>,
+    exclude_files: Vec<Glob>,
+    exclude_dirs: Vec<Glob>,
     /// Excludes anchored to the base folder (e.g. "/src/gen/" or "\docs\a.txt"), matched against the relative path.
-    exclude_rel_files: Vec<String>,
-    exclude_rel_dirs: Vec<String>,
+    exclude_rel_files: Vec<Glob>,
+    exclude_rel_dirs: Vec<Glob>,
     /// Folder include masks (name masks and base-anchored ones); both empty = all folders.
-    include_dirs: Vec<String>,
-    include_rel_dirs: Vec<String>,
+    include_dirs: Vec<Glob>,
+    include_rel_dirs: Vec<Glob>,
 }
 
 /// Normalizes a base-anchored mask to "a/b" form, or None for a plain name mask.
@@ -306,7 +331,7 @@ impl Masks {
             include.push("*".into());
         }
         let mut masks = Masks {
-            include,
+            include: include.into_iter().map(|m| Glob::new(&m)).collect(),
             exclude_files: vec![],
             exclude_dirs: vec![],
             exclude_rel_files: vec![],
@@ -321,15 +346,15 @@ impl Masks {
             match rel_mask(&body) {
                 Some(r) => {
                     if !dir_only {
-                        masks.exclude_rel_files.push(r.clone());
+                        masks.exclude_rel_files.push(Glob::new(&r));
                     }
-                    masks.exclude_rel_dirs.push(r);
+                    masks.exclude_rel_dirs.push(Glob::new(&r));
                 }
                 None => {
                     if !dir_only {
-                        masks.exclude_files.push(body.clone());
+                        masks.exclude_files.push(Glob::new(&body));
                     }
-                    masks.exclude_dirs.push(body);
+                    masks.exclude_dirs.push(Glob::new(&body));
                 }
             }
         }
@@ -338,23 +363,27 @@ impl Masks {
             for m in dir_includes {
                 let body = m.trim_end_matches(['/', '\\']);
                 match rel_mask(body) {
-                    Some(r) => masks.include_rel_dirs.push(r),
-                    None => masks.include_dirs.push(body.to_string()),
+                    Some(r) => masks.include_rel_dirs.push(Glob::new(&r)),
+                    None => masks.include_dirs.push(Glob::new(body)),
                 }
             }
         }
         masks
     }
     fn file_ok(&self, name: &str, rel: &str) -> bool {
-        self.include.iter().any(|m| glob_match(m, name))
-            && !self.exclude_files.iter().any(|m| glob_match(m, name))
-            && !self.exclude_rel_files.iter().any(|m| glob_match(m, rel))
+        let n = lower_chars(name);
+        let r = if self.exclude_rel_files.is_empty() { vec![] } else { lower_chars(rel) };
+        self.include.iter().any(|m| m.matches(&n))
+            && !self.exclude_files.iter().any(|m| m.matches(&n))
+            && !self.exclude_rel_files.iter().any(|m| m.matches(&r))
     }
     fn dir_ok(&self, name: &str, rel: &str) -> bool {
+        let n = lower_chars(name);
+        let r = if self.include_rel_dirs.is_empty() && self.exclude_rel_dirs.is_empty() { vec![] } else { lower_chars(rel) };
         let included = (self.include_dirs.is_empty() && self.include_rel_dirs.is_empty())
-            || self.include_dirs.iter().any(|m| glob_match(m, name))
-            || self.include_rel_dirs.iter().any(|m| glob_match(m, rel));
-        included && !self.exclude_dirs.iter().any(|m| glob_match(m, name)) && !self.exclude_rel_dirs.iter().any(|m| glob_match(m, rel))
+            || self.include_dirs.iter().any(|m| m.matches(&n))
+            || self.include_rel_dirs.iter().any(|m| m.matches(&r));
+        included && !self.exclude_dirs.iter().any(|m| m.matches(&n)) && !self.exclude_rel_dirs.iter().any(|m| m.matches(&r))
     }
 }
 
@@ -742,44 +771,52 @@ pub(crate) fn open_source(path: &str) -> io::Result<Option<Loc>> {
 /// Display order of names: letters and digits first, ignoring punctuation and spaces,
 /// then accents, then punctuation, then case (lower before upper).
 pub fn name_order(a: &str, b: &str) -> Ordering {
+    name_key(a).cmp(&name_key(b)).then_with(|| a.cmp(b))
+}
+
+/// Normalized name parts: primary letters, accents, punctuation, case.
+type NameParts = (Vec<char>, Vec<String>, Vec<(bool, char)>, Vec<bool>);
+
+/// The normalized part of a display sort key, computed once per name.
+fn name_key(s: &str) -> NameParts {
     use unicode_normalization::char::is_combining_mark;
     use unicode_normalization::UnicodeNormalization;
-    struct Keys {
-        primary: Vec<char>,
-        accents: Vec<String>,
-        punct: Vec<(bool, char)>,
-        case: Vec<bool>,
-    }
-    let keys = |s: &str| {
-        let mut k = Keys { primary: vec![], accents: vec![], punct: vec![], case: vec![] };
-        for c in s.nfd() {
-            if is_combining_mark(c) {
-                if let Some(last) = k.accents.last_mut() {
-                    last.push(c);
-                }
-                continue;
+    let (mut primary, mut accents, mut punct, mut case): NameParts = (vec![], vec![], vec![], vec![]);
+    for c in s.nfd() {
+        if is_combining_mark(c) {
+            if let Some(last) = accents.last_mut() {
+                last.push(c);
             }
-            let lower = c.to_lowercase().next().unwrap_or(c);
-            if c.is_alphanumeric() {
-                k.primary.push(lower);
-                k.accents.push(String::new());
-            }
-            k.punct.push((c.is_alphanumeric(), lower));
-            k.case.push(c.is_uppercase());
+            continue;
         }
-        k
-    };
-    let (x, y) = (keys(a), keys(b));
-    x.primary.cmp(&y.primary).then_with(|| x.accents.cmp(&y.accents)).then_with(|| x.punct.cmp(&y.punct)).then_with(|| x.case.cmp(&y.case)).then_with(|| a.cmp(b))
+        let lower = c.to_lowercase().next().unwrap_or(c);
+        if c.is_alphanumeric() {
+            primary.push(lower);
+            accents.push(String::new());
+        }
+        punct.push((c.is_alphanumeric(), lower));
+        case.push(c.is_uppercase());
+    }
+    (primary, accents, punct, case)
 }
 
-/// Folders first, then by display name order.
-fn display_name_order(a: &str, b: &str, dot_names_first: bool) -> Ordering {
-    (dot_names_first && b.starts_with('.')).cmp(&(dot_names_first && a.starts_with('.'))).then_with(|| name_order(a, b))
+/// Full display sort key of a listing entry: folders first, then dot names, then name order.
+/// Cached per entry so sorting a listing normalizes each name only once.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct DisplayKey {
+    not_dir: bool,
+    not_dot: bool,
+    name: NameParts,
+    raw: String,
 }
 
-fn entry_order(a: &(String, bool), b: &(String, bool), dot_names_first: bool) -> Ordering {
-    b.1.cmp(&a.1).then_with(|| display_name_order(&a.0, &b.0, dot_names_first))
+fn display_key(name: &str, dir: bool, dot_names_first: bool) -> DisplayKey {
+    DisplayKey {
+        not_dir: !dir,
+        not_dot: !(dot_names_first && name.starts_with('.')),
+        name: name_key(name),
+        raw: name.to_string(),
+    }
 }
 
 struct Listing {
@@ -911,7 +948,7 @@ fn orphan_tree(parent: &Loc, rel: &str, name: &str, m: &Meta, left: bool, cx: &C
         match list(&loc, rel, cx, &child) {
             Ok(l) => {
                 let mut entries: Vec<_> = l.entries.into_iter().collect();
-                entries.sort_by(|a, b| entry_order(&a.0, &b.0, cx.o.dot_names_first));
+                entries.sort_by_cached_key(|e| display_key(&e.0 .0, e.0 .1, cx.o.dot_names_first));
                 for (_, (cname, cm)) in entries {
                     let crel = format!("{rel}/{cname}");
                     node.children.push(orphan_tree(&loc, &crel, &cname, &cm, left, cx, sum, &child));
@@ -943,7 +980,7 @@ fn compare_dirs(lp: &Loc, rp: &Loc, rel: &str, cx: &Ctx, sum: &mut Summary, lgit
     }
     let hidden: Vec<&(String, bool)> = aligned.values().collect();
     let mut keys: Vec<(String, bool)> = ll.entries.keys().chain(rl.entries.keys().filter(|k| !hidden.contains(k))).cloned().collect();
-    keys.sort_by(|a, b| entry_order(a, b, o.dot_names_first));
+    keys.sort_by_cached_key(|k| display_key(&k.0, k.1, o.dot_names_first));
     keys.dedup();
     let mut out = Vec::new();
     for key in keys {
@@ -1194,18 +1231,21 @@ fn compare_flat(left: &Loc, right: &Loc, cx: &Ctx, sum: &mut Summary) -> io::Res
         node.rel = rel;
         out.push(node);
     }
-    out.sort_by(|a, b| display_name_order(&a.name, &b.name, o.dot_names_first).then_with(|| a.rel.cmp(&b.rel)));
+    out.sort_by_cached_key(|n| (display_key(&n.name, false, o.dot_names_first), n.rel.clone()));
     Ok(out)
 }
 
-fn finish_comparison(nodes: &mut [Node], left: &Loc, right: &Loc, cx: &Ctx, pending: &mut HashMap<String, (Meta, Meta)>, sum: &mut Summary, total: usize, lgit: &GitRules, rgit: &GitRules) {
+#[allow(clippy::too_many_arguments)]
+fn finish_comparison(nodes: &mut [Node], left: &Loc, right: &Loc, cx: &Ctx, pending: &mut HashMap<String, (Meta, Meta)>, sum: &mut Summary, total: usize, lgit: &GitRules, rgit: &GitRules, verdicts: &mut std::vec::IntoIter<Verdict>) {
+    // With precomputed verdicts the worker pool already reported progress.
+    let report = verdicts.len() == 0;
     for node in nodes {
         if node.dir {
             let left_child = node.left.as_ref().map_or_else(|| left.clone(), |side| left.join(&side.name));
             let right_child = node.right.as_ref().map_or_else(|| right.clone(), |side| right.join(&side.name));
             let lch = lgit.read(&left_child, &node.rel, cx.o);
             let rch = rgit.read(&right_child, &node.rel, cx.o);
-            finish_comparison(&mut node.children, &left_child, &right_child, cx, pending, sum, total, &lch, &rch);
+            finish_comparison(&mut node.children, &left_child, &right_child, cx, pending, sum, total, &lch, &rch, verdicts);
             if node.left.is_some() && node.right.is_some() && node.error.is_none() {
                 node.status = folder_status(&node.children);
                 node.newer = if node.status == Status::Diff { content_newer(&node.children) } else { None };
@@ -1215,19 +1255,113 @@ fn finish_comparison(nodes: &mut [Node], left: &Loc, right: &Loc, cx: &Ctx, pend
         if let (Some(left_side), Some(right_side)) = (&node.left, &node.right) {
             let left_rel = node.left_path.as_deref().unwrap_or(&node.rel);
             let (left_meta, right_meta) = pending.remove(left_rel).expect("discovered paired file metadata");
-            let left_parent = node.left_path.as_ref().map_or_else(|| left.clone(), |path| left.join_rel(path.rsplit_once('/').map_or("", |(parent, _)| parent)));
-            let right_parent = node.right_path.as_ref().map_or_else(|| right.clone(), |path| right.join_rel(path.rsplit_once('/').map_or("", |(parent, _)| parent)));
-            let compared = pair_node(&left_parent, &right_parent, left_rel, &left_side.name, &left_meta, &right_side.name, &right_meta, cx, sum, lgit, rgit);
-            node.status = compared.status;
-            node.newer = compared.newer;
-            node.content = compared.content;
-            node.error = compared.error;
+            let (status, content, error) = match verdicts.next() {
+                Some(v) => {
+                    sum.files += 1;
+                    match v.status {
+                        Status::Same => sum.same += 1,
+                        Status::Similar => sum.similar += 1,
+                        Status::Error => sum.errors += 1,
+                        _ => sum.diff += 1,
+                    }
+                    (v.status, v.content, v.error)
+                }
+                None => {
+                    let left_parent = node.left_path.as_ref().map_or_else(|| left.clone(), |path| left.join_rel(path.rsplit_once('/').map_or("", |(parent, _)| parent)));
+                    let right_parent = node.right_path.as_ref().map_or_else(|| right.clone(), |path| right.join_rel(path.rsplit_once('/').map_or("", |(parent, _)| parent)));
+                    let compared = pair_node(&left_parent, &right_parent, left_rel, &left_side.name, &left_meta, &right_side.name, &right_meta, cx, sum, lgit, rgit);
+                    (compared.status, compared.content, compared.error)
+                }
+            };
+            node.status = status;
+            node.newer = if status == Status::Diff { newer(left_side, right_side, cx.o) } else { None };
+            node.content = content;
+            node.error = error;
         } else {
             sum.files += 1;
             if node.left.is_some() { sum.left_only += 1 } else { sum.right_only += 1 }
         }
-        cx.notify("comparing", sum.files as usize, Some(total), false);
+        if report {
+            cx.notify("comparing", sum.files as usize, Some(total), false);
+        }
     }
+}
+
+/// A paired file whose content comparison can run on a worker thread.
+struct FileJob {
+    lp: Loc,
+    rp: Loc,
+    ln: String,
+    rn: String,
+    lm: Meta,
+    rm: Meta,
+}
+
+struct Verdict {
+    status: Status,
+    content: Option<Content>,
+    error: Option<String>,
+}
+
+fn judge(j: &FileJob, o: &FolderOptions) -> Verdict {
+    let ls = side(&j.ln, &j.lm);
+    let rs = side(&j.rn, &j.rm);
+    match compare_files(&j.lp.join(&j.ln), &j.rp.join(&j.rn), &j.lm, &j.rm, &ls, &rs, o) {
+        Ok((status, content)) => Verdict { status, content, error: None },
+        Err(e) => Verdict { status: Status::Error, content: None, error: Some(e.to_string()) },
+    }
+}
+
+/// Collects the paired files in `finish_comparison` traversal order.
+fn collect_jobs(nodes: &[Node], left: &Loc, right: &Loc, pending: &HashMap<String, (Meta, Meta)>, jobs: &mut Vec<FileJob>) {
+    for node in nodes {
+        if node.dir {
+            let left_child = node.left.as_ref().map_or_else(|| left.clone(), |side| left.join(&side.name));
+            let right_child = node.right.as_ref().map_or_else(|| right.clone(), |side| right.join(&side.name));
+            collect_jobs(&node.children, &left_child, &right_child, pending, jobs);
+            continue;
+        }
+        if let (Some(ls), Some(rs)) = (&node.left, &node.right) {
+            let left_rel = node.left_path.as_deref().unwrap_or(&node.rel);
+            let (lm, rm) = pending.get(left_rel).expect("discovered paired file metadata");
+            let lp = node.left_path.as_ref().map_or_else(|| left.clone(), |path| left.join_rel(path.rsplit_once('/').map_or("", |(parent, _)| parent)));
+            let rp = node.right_path.as_ref().map_or_else(|| right.clone(), |path| right.join_rel(path.rsplit_once('/').map_or("", |(parent, _)| parent)));
+            jobs.push(FileJob { lp, rp, ln: ls.name.clone(), rn: rs.name.clone(), lm: lm.clone(), rm: rm.clone() });
+        }
+    }
+}
+
+/// Content verdicts in job order, computed on a small worker pool. Progress is reported from
+/// the calling thread as results arrive; orphans count as already completed.
+fn judge_all(jobs: &[FileJob], o: &FolderOptions, cx: &Ctx, total: usize) -> Vec<Verdict> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8).min(jobs.len());
+    if threads <= 1 {
+        return jobs.iter().map(|j| judge(j, o)).collect();
+    }
+    let base = total - jobs.len();
+    let queue = Mutex::new(jobs.iter().enumerate());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            let (queue, tx) = (&queue, tx.clone());
+            scope.spawn(move || loop {
+                let next = queue.lock().unwrap_or_else(|p| p.into_inner()).next();
+                let Some((i, job)) = next else { break };
+                if tx.send((i, judge(job, o))).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(tx);
+        let mut out: Vec<Option<Verdict>> = (0..jobs.len()).map(|_| None).collect();
+        let mut completed = 0;
+        while let Ok((i, v)) = rx.recv() {
+            out[i] = Some(v);
+            completed += 1;
+            cx.notify("comparing", base + completed, Some(total), false);
+        }
+        out.into_iter().map(|v| v.expect("content verdict")).collect()
+    })
 }
 
 pub fn compare_folders(left: &str, right: &str, o: &FolderOptions) -> io::Result<FolderResult> {
@@ -1311,7 +1445,9 @@ fn compare_folders_impl(left: &str, right: &str, o: &FolderOptions, progress: Op
     cx.notify("scanning", 0, None, true);
     let lp = open_source(left)?.ok_or_else(|| io::Error::other(format!("Left folder not found: {left}")))?;
     let rp = open_source(right)?.ok_or_else(|| io::Error::other(format!("Right folder not found: {right}")))?;
-    if progress.is_some() { *cx.pending.borrow_mut() = Some(HashMap::new()); }
+    // Content criteria defer paired files so their verdicts can be computed in parallel.
+    let content_criteria = matches!(o.criteria.as_str(), "binary" | "crc" | "rules");
+    if progress.is_some() || content_criteria { *cx.pending.borrow_mut() = Some(HashMap::new()); }
     let mut sum = Summary::default();
     let (lgit, rgit) = (GitRules::default().read(&lp, "", o), GitRules::default().read(&rp, "", o));
     let mut children = if o.flatten { compare_flat(&lp, &rp, &cx, &mut sum)? } else { compare_dirs(&lp, &rp, "", &cx, &mut sum, &lgit, &rgit)? };
@@ -1320,7 +1456,14 @@ fn compare_folders_impl(left: &str, right: &str, o: &FolderOptions, progress: Op
         let total = sum.files as usize;
         sum = Summary { errors: sum.errors, ..Summary::default() };
         cx.notify("comparing", 0, Some(total), true);
-        finish_comparison(&mut children, &lp, &rp, &cx, &mut pending, &mut sum, total, &lgit, &rgit);
+        let verdicts = if content_criteria && total > 1 {
+            let mut jobs = Vec::new();
+            collect_jobs(&children, &lp, &rp, &pending, &mut jobs);
+            judge_all(&jobs, o, &cx, total)
+        } else {
+            Vec::new()
+        };
+        finish_comparison(&mut children, &lp, &rp, &cx, &mut pending, &mut sum, total, &lgit, &rgit, &mut verdicts.into_iter());
         cx.notify("comparing", total, Some(total), true);
     }
     if o.detect_moves && !o.flatten {
@@ -1747,9 +1890,9 @@ mod tests {
     fn name_order_dot_prefix_groups_follow_folders_first() {
         let entries = vec![("api", true), ("README.md", false), (".vscode", true), (".git", false), (".github", true), ("app.yml", false), (".env", false), (".streamlit", true)];
         let mut entries: Vec<_> = entries.into_iter().map(|(name, dir)| (name.to_string(), dir)).collect();
-        entries.sort_by(|a, b| super::entry_order(a, b, true));
+        entries.sort_by_cached_key(|entry| super::display_key(&entry.0, entry.1, true));
         assert_eq!(entries.iter().map(|entry| entry.0.as_str()).collect::<Vec<_>>(), [".github", ".streamlit", ".vscode", "api", ".env", ".git", "app.yml", "README.md"]);
-        entries.sort_by(|a, b| super::entry_order(a, b, false));
+        entries.sort_by_cached_key(|entry| super::display_key(&entry.0, entry.1, false));
         assert_eq!(entries.iter().map(|entry| entry.0.as_str()).collect::<Vec<_>>(), ["api", ".github", ".streamlit", ".vscode", "app.yml", ".env", ".git", "README.md"]);
     }
 
