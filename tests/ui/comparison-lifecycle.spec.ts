@@ -323,6 +323,7 @@ test("a burst of scroll events triggers one virtual-window update", async ({ pag
   // rAF coalescing keeps a burst spread across microtasks to a handful of renders
   // (well under one per event); without it every event triggers a separate update.
   expect(renders).toBeLessThanOrEqual(8);
+  await expect.poll(async () => (await minimapMetrics(page)).top).toBe(2000);
 });
 
 test("rapid minimap arrow presses accumulate without losing steps", async ({ page, folders }) => {
@@ -337,4 +338,29 @@ test("rapid minimap arrow presses accumulate without losing steps", async ({ pag
     for (let i = 0; i < 4; i++) el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
   });
   await expect.poll(async () => (await minimapMetrics(page)).top).toBe(80);
+});
+
+test("a synced pane never pulls both panes back to an old scroll position", async ({ page, folders }) => {
+  const lines = Array.from({ length: 500 }, (_, i) => `Line ${i}`);
+  await folders.pair("sync.txt", lines.join("\n"), lines.join("\n"));
+  await openMinimap(page, join(folders.left, "sync.txt"), join(folders.right, "sync.txt"));
+  const panes = page.locator(".tab-view:visible .tpane");
+  // Rapid real scroll on the left pane: the right pane is synced programmatically and
+  // its scroll event must not be mistaken for a new user scroll at an older position.
+  await panes.first().evaluate(async (left) => {
+    const right = left.parentElement!.querySelectorAll<HTMLDivElement>(".tpane")[1];
+    // Two scrolls from the leading pane; each writes a position into the follower.
+    left.scrollTop = 100;
+    left.dispatchEvent(new Event("scroll"));
+    left.scrollTop = 200;
+    left.dispatchEvent(new Event("scroll"));
+    // The follower acknowledges the latest position, then a late echo of the older
+    // one arrives. It must be ignored rather than scrolling both panes back to 100.
+    right.dispatchEvent(new Event("scroll"));
+    right.scrollTop = 100;
+    right.dispatchEvent(new Event("scroll"));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  await expect.poll(async () => (await minimapMetrics(page)).leftX).toBe(0);
+  await expect.poll(async () => (await minimapMetrics(page)).top).toBe(200);
 });

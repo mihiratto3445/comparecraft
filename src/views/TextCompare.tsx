@@ -469,14 +469,22 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
   const maxL = maxCh(0);
   const maxR = maxCh(1);
 
-  let syncing = false;
+  // Scroll events emitted by a pane we just synced carry the value we wrote. Keep
+  // every written position as an echo until its event arrives, even if other events
+  // come first: a late echo must not pull both panes back to a stale position.
+  const echoes = new Map<HTMLDivElement, { top: number; left: number }[]>();
   const onScroll = (src: HTMLDivElement, dst: HTMLDivElement) => {
-    if (syncing) {
-      syncing = false;
+    const pending = echoes.get(src) ?? [];
+    const at = pending.findIndex((p) => p.top === src.scrollTop && p.left === src.scrollLeft);
+    if (at >= 0) {
+      pending.splice(at, 1);
       return;
     }
     if (dst.scrollTop !== src.scrollTop || dst.scrollLeft !== src.scrollLeft) {
-      syncing = true;
+      const queued = echoes.get(dst) ?? [];
+      queued.push({ top: src.scrollTop, left: src.scrollLeft });
+      if (queued.length > 8) queued.shift();
+      echoes.set(dst, queued);
       dst.scrollTop = src.scrollTop;
       dst.scrollLeft = src.scrollLeft;
     }
