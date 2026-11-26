@@ -97,13 +97,18 @@ export function Btn(props: {
 /** Tracks size of a scroll container and computes a virtual window. */
 export function useViewport(el: () => HTMLElement | undefined) {
   const [height, setHeight] = createSignal(600);
+  const [width, setWidth] = createSignal(0);
   const [scrollTop, setScrollTop] = createSignal(0);
   onMount(() => {
     const e = el();
     if (!e) return;
-    const ro = new ResizeObserver(() => setHeight(e.clientHeight));
+    const ro = new ResizeObserver(() => {
+      setHeight(e.clientHeight);
+      setWidth(e.clientWidth);
+    });
     ro.observe(e);
     setHeight(e.clientHeight);
+    setWidth(e.clientWidth);
     onCleanup(() => ro.disconnect());
   });
   const range = (count: number, rowH = editorRowHeight(), overscan = 12) => {
@@ -111,7 +116,7 @@ export function useViewport(el: () => HTMLElement | undefined) {
     const end = Math.min(count, Math.ceil((scrollTop() + height()) / rowH) + overscan);
     return { start, end };
   };
-  return { height, scrollTop, setScrollTop, range };
+  return { height, width, scrollTop, setScrollTop, range };
 }
 
 /** Renders a line with highlighted UTF-16 ranges. */

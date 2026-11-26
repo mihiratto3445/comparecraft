@@ -56,6 +56,8 @@ The number of context lines (3 by default) is set with **Context lines (Show Con
 
 **≈ Ignore whitespace** is the quick switch for whitespace noise: it turns the three whitespace rules on or off together and, when switching on, also turns on **Ignore unimportant**, so lines that differ only in whitespace stop appearing as differences. CRLF and LF line endings are always treated as equal, so a file that only differs in its line endings is never reported as different.
 
+**↩ Wrap** (**View > Word Wrap**) wraps long lines to fit the pane instead of scrolling horizontally. Lines break at spaces when possible, and a word longer than the pane is broken at the pane edge. Both panes keep their aligned rows at the same height, and the difference map, scrolling and navigation follow the wrapped layout. Wrapping is off by default and is remembered per comparison tab.
+
 ## Move between differences
 
 - Click **▼ Next** or press `Ctrl+N` to go to the next difference section. Click **▲ Prev** or press `Ctrl+P` to go to the previous one. (**Search > Next Difference Section** and **Search > Previous Difference Section**.)
