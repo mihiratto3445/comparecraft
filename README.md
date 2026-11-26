@@ -70,9 +70,10 @@ of changes within lines.
 Differences are classified as **important** (red) or **unimportant** (blue): leading, trailing or embedded
 whitespace, case, orphan lines, text **replacements** and sections you mark as **Ignored**. Gutter arrows
 copy a section (or the selected lines) to the other side in one click. **Align With** and **Isolate**
-fix up the alignment by hand. Edit inline, cut, copy and paste lines, compare a selection to the
-clipboard, undo, and save each side on its own or both together. Saves keep the original encoding, BOM
-and line endings, and write `.bak` backups.
+fix up the alignment by hand. Click a line and type to edit it in place at the click point; cut, copy and
+paste lines, compare a selection to the clipboard, undo, and save each side on its own or both together.
+**View › Word Wrap** wraps long lines to fit the pane while keeping aligned rows at the same height.
+Saves keep the original encoding, BOM and line endings, and write `.bak` backups.
 
 </td>
 <td width="50%" valign="top">
@@ -570,7 +571,8 @@ means ⌘. Shortcuts can be changed in **Tools › Options › Toolbars, Shortcu
 | Alt+← / Alt+→ (Folder Compare) | Back / forward through base-folder history |
 | Ctrl+← / Ctrl+→ (Folder Compare) | Act on the left / right side of the selected rows |
 | ↑ ↓ PgUp PgDn Home End, ← → (Folder Compare) | Move selection (add Shift to extend it), collapse / expand folder |
-| Ctrl+A, Shift+Ctrl+A (Folder Compare) | Select all, select all files |
+| Ctrl+A (Text, Folder and Table Compare) | Select all on the focused side: every line in Text Compare, every visible item or row in Folder and Table Compare |
+| Shift+Ctrl+A (Folder Compare) | Select all files on the focused side |
 | Ctrl+Alt+L (Folder Compare) | Legend |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 (Folder Compare) | Show all / differences / same |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 (Picture Compare) | Tolerance / mismatch range / blend mode |
@@ -630,7 +632,7 @@ covered by `scripts/parity.sh`.
 
 Not implemented yet:
 
-- folder merge and three-way folder compare
+- three-way folder compare
 - source-control integration
 - media, registry and version-information compare; picture metadata compare
 - archives as folders; FTP/SFTP and cloud locations
