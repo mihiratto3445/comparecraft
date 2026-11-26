@@ -491,7 +491,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
       dst.scrollTop = src.scrollTop;
       dst.scrollLeft = src.scrollLeft;
     }
-    vp.setScrollTop(src.scrollTop);
+    vp.onScrollTop(src.scrollTop);
   };
 
   function scrollPanes(top: number) {

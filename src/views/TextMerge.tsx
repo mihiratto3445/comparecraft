@@ -368,7 +368,7 @@ export default function TextMerge(props: { tab: Tab; active: boolean }) {
           </div>
         ))}
       </div>
-      <div class="mtop" ref={top} {...paneFocus.paneProps("top")} onScroll={(e) => vpTop.setScrollTop(e.currentTarget.scrollTop)}>
+      <div class="mtop" ref={top} {...paneFocus.paneProps("top")} onScroll={(e) => vpTop.onScrollTop(e.currentTarget.scrollTop)}>
         <div style={{ height: `${topRows().length * editorRowHeight()}px`, position: "relative" }}>
           <Index each={winTop()}>
             {(it) => {
@@ -395,7 +395,7 @@ export default function TextMerge(props: { tab: Tab; active: boolean }) {
         <span class="plabel">{LABELS[3]}</span>
         <PathBar value={outputPath()} title={tab().titles?.[3]} saveDialog onCommit={(p) => setPath(3, p)} dirty={dirty()} />
       </div>
-      <div class="mbottom" ref={bottom} {...paneFocus.paneProps("bottom")} onScroll={(e) => vpBot.setScrollTop(e.currentTarget.scrollTop)}>
+      <div class="mbottom" ref={bottom} {...paneFocus.paneProps("bottom")} onScroll={(e) => vpBot.onScrollTop(e.currentTarget.scrollTop)}>
         <div style={{ height: `${outRows().length * editorRowHeight()}px`, position: "relative" }}>
           <Index each={winBot()}>
             {(it) => (
