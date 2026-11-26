@@ -94,3 +94,27 @@ test("a read-only side neither edits on typing nor on a second click", async ({ 
   await expect(editor(page)).toHaveCount(0);
   await expect.poll(() => texts(leftPane(page))).toEqual(["one", "two", "three", "four"]);
 });
+test("the unwrapped pane width tracks line length after edits and undo", async ({ page, folders }) => {
+  await folders.pair("width.txt", "short\na much longer line\nshort\n", "x\nshort\nx\n");
+  await page.goto(`/tests/ui/?spec=${encodeURIComponent(JSON.stringify({ kind: "text", paths: [join(folders.left, "width.txt"), join(folders.right, "width.txt")] }))}`);
+  await expect(page.locator(".tab-view:visible .trow").first()).toBeVisible({ timeout: 15000 });
+  const inner = leftPane(page).locator(".tpane-inner");
+  const width = () => inner.evaluate((el) => Number.parseFloat(el.style.width.match(/[\d.]+/)?.[0] ?? "0"));
+  const initial = await width();
+
+  // Shorten the longest line: the pane must shrink.
+  await leftPane(page).locator(".trow").nth(1).locator(".tx").dblclick();
+  await editor(page).fill("tiny");
+  await editor(page).press("Enter");
+  await expect.poll(width).toBeLessThan(initial);
+
+  // Lengthen a short line past the old maximum: the pane must grow again.
+  await leftPane(page).locator(".trow").nth(0).locator(".tx").dblclick();
+  await editor(page).fill("an even longer line than before");
+  await editor(page).press("Enter");
+  await expect.poll(width).toBeGreaterThan(initial);
+
+  // Undo restores the pre-edit text and its width.
+  await page.getByRole("button", { name: "↶ Undo" }).click();
+  await expect.poll(width).toBeLessThan(initial);
+});
