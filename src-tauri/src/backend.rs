@@ -326,6 +326,8 @@ fn folder_options(value: Option<Value>) -> Result<folder::FolderOptions, RpcErro
         "ignoreCaseNames",
         "followSymlinks",
         "dotNamesFirst",
+        "detectMoves",
+        "useGitignore",
         "align",
     ];
     const FILTER_FIELDS: &[&str] = &[

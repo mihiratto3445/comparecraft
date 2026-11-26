@@ -182,6 +182,17 @@ test("unsaved edits do not change the folder, but saving does", async ({ page, f
   await expect(page.locator(".tab-view:visible .statusbar")).toContainText("1 same");
 });
 
+test("Ignore whitespace removes whitespace-only differences in one click", async ({ page, folders }) => {
+  await folders.pair("pair.txt", "a b\n", "a   b\n");
+  await folders.open(page);
+  await page.locator(".frow").dblclick();
+  const rows = page.locator(".tab-view:visible .trow.k-unimportant");
+  await expect(rows.first()).toBeVisible();
+  await page.locator(".tab-view:visible .toolbar").getByRole("button", { name: "≈ Ignore whitespace" }).click();
+  await expect(rows).toHaveCount(0);
+  await expect(page.locator(".tab-view:visible .toolbar").getByRole("button", { name: "≈ Ignore unimportant" })).toHaveClass(/active/);
+});
+
 test("a real file load error is propagated instead of comparing empty data as equal", async ({ page, folders }) => {
   await folders.pair("pair.txt", "same\n", "same\n");
   await folders.open(page);

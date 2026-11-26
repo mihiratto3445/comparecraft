@@ -89,6 +89,7 @@ export function folderInfo(root: FNode, timesize: boolean): InfoGroup[] {
     { label: "same file(s)", cls: "same", items: [] },
     { label: "left orphan file(s)", cls: "left", items: [] },
     { label: "right orphan file(s)", cls: "right", items: [] },
+    { label: "moved or renamed file(s)", cls: "newer", items: [] },
     { label: "left newer file(s)", cls: "newer", items: [] },
     { label: "right newer file(s)", cls: "newer", items: [] },
     { label: "difference file(s)", cls: "diff", items: [] },
@@ -100,15 +101,18 @@ export function folderInfo(root: FNode, timesize: boolean): InfoGroup[] {
         walk(c);
         continue;
       }
+      // Moved orphans are listed by left-to-right path, whichever side holds the file.
+      const pair = c.moved ? (c.status === "left" ? `${c.rel} → ${c.moved}` : `${c.moved} → ${c.rel}`) : "";
       const g =
         c.status === "same" || c.status === "similar" ? 0
+        : c.moved ? 3
         : c.status === "left" ? 1
         : c.status === "right" ? 2
-        : c.status === "diff" && timesize && c.newer === "left" ? 3
-        : c.status === "diff" && timesize && c.newer === "right" ? 4
-        : c.status === "diff" ? 5
-        : 6;
-      groups[g].items.push(c.rel);
+        : c.status === "diff" && timesize && c.newer === "left" ? 4
+        : c.status === "diff" && timesize && c.newer === "right" ? 5
+        : c.status === "diff" ? 6
+        : 7;
+      groups[g].items.push(c.moved ? pair : c.rel);
     }
   };
   walk(root);

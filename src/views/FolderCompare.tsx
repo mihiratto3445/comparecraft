@@ -57,11 +57,11 @@ import {
 } from "./folderOps";
 
 /** Display filter status bits. */
-const BIT = { same: 0x1, leftOrphan: 0x4, rightOrphan: 0x8, leftNewer: 0x40, rightNewer: 0x80, diff: 0x200 } as const;
-const ALL_BITS = 0x2cd;
+const BIT = { same: 0x1, leftOrphan: 0x4, rightOrphan: 0x8, leftNewer: 0x40, rightNewer: 0x80, diff: 0x200, moved: 0x1000 } as const;
+const ALL_BITS = 0x12cd;
 /** Display filter favorites, in the order of the reference View menu. */
 const PRESETS: [string, number, string][] = [
-  ["all", 0x2cd, "Show All"],
+  ["all", ALL_BITS, "Show All"],
   ["diffs", 0x2cc, "Show Differences"],
   ["same", 0x1, "Show Same"],
   ["noorphans", 0x2c1, "Show No Orphans"],
@@ -73,6 +73,7 @@ const PRESETS: [string, number, string][] = [
   ["rnewerorph", 0x88, "Show Right Newer and Right Orphans"],
   ["lorphans", 0x4, "Show Left Orphans"],
   ["rorphans", 0x8, "Show Right Orphans"],
+  ["moved", BIT.moved, "Show Moved and Renamed"],
 ];
 const TOGGLES: [string, number, string][] = [
   ["tog-same", BIT.same, "Same"],
@@ -81,6 +82,7 @@ const TOGGLES: [string, number, string][] = [
   ["tog-lnewer", BIT.leftNewer, "Left Newer"],
   ["tog-rnewer", BIT.rightNewer, "Right Newer"],
   ["tog-diff", BIT.diff, "Differences (no newer side)"],
+  ["tog-moved", BIT.moved, "Moved and Renamed"],
 ];
 /** Folder handling (one radio group in the reference View menu). */
 type FolderMode = "showall" | "structure" | "filesonly" | "flatten";
@@ -100,6 +102,8 @@ export const defaultOptions = (): FolderOptions => ({
   exclude: ".git/;node_modules/",
   ignoreCaseNames: IS_WINDOWS || IS_MAC,
   followSymlinks: false,
+  detectMoves: true,
+  useGitignore: false,
   ...(settings.folderDefaults ?? {}),
   align: [],
 });
@@ -133,8 +137,8 @@ function globMatch(mask: string, name: string): boolean {
 /** Status bit of an item for the display filter. */
 function statusBit(n: FNode, st: Status, ignoreUnimportant: boolean): number {
   if (st === "same" || (st === "similar" && ignoreUnimportant)) return BIT.same;
-  if (st === "left") return BIT.leftOrphan;
-  if (st === "right") return BIT.rightOrphan;
+  if (st === "left") return BIT.leftOrphan | (n.moved ? BIT.moved : 0);
+  if (st === "right") return BIT.rightOrphan | (n.moved ? BIT.moved : 0);
   if (n.newer === "left") return BIT.leftNewer;
   if (n.newer === "right") return BIT.rightNewer;
   return BIT.diff;
@@ -180,7 +184,7 @@ function rollup(children: Status[]): Status {
 
 /** Recomputes paired-folder statuses and the summary after items were re-compared in place. */
 function recompute(root: FNode): Summary {
-  const sum: Summary = { files: 0, same: 0, similar: 0, diff: 0, leftOnly: 0, rightOnly: 0, errors: 0 };
+  const sum: Summary = { files: 0, same: 0, similar: 0, diff: 0, leftOnly: 0, rightOnly: 0, moved: 0, errors: 0 };
   const walk = (n: FNode, top: boolean) => {
     n.children?.forEach((c) => walk(c, false));
     if (top) return;
@@ -193,7 +197,12 @@ function recompute(root: FNode): Summary {
       }
     } else if (!paired) {
       sum.files++;
-      n.left ? sum.leftOnly++ : sum.rightOnly++;
+      // A move is one logical change and is not counted on both orphan sides.
+      if (n.moved) {
+        if (n.status === "left") sum.moved++;
+      } else {
+        n.left ? sum.leftOnly++ : sum.rightOnly++;
+      }
     } else {
       sum.files++;
       if (n.status === "same") sum.same++;
@@ -1045,6 +1054,12 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
     setSel(new Set<string>());
     void refresh();
   }
+  function toggleGitignore() {
+    setOpts("useGitignore", !opts.useGitignore);
+    saveOpts();
+    setSel(new Set<string>());
+    void refresh();
+  }
   const nameMask = (n: FNode, onlyHere: boolean) => {
     const nm = n.left?.name ?? n.right!.name;
     const rel = n.leftPath ?? n.rightPath ?? n.rel;
@@ -1683,7 +1698,7 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
     {
       id: "show-favorites", menu: "View", group: "filters", label: "Show",
       submenu: () => ["show-all", "show-diffs", "show-same", "show-noorphans", "show-diffsnoorph", "show-orphans", "-",
-        "show-lnewer", "show-rnewer", "show-lnewerorph", "show-rnewerorph", "show-lorphans", "show-rorphans"],
+        "show-lnewer", "show-rnewer", "show-lnewerorph", "show-rnewerorph", "show-lorphans", "show-rorphans", "show-moved"],
       run: () => {},
     },
     ...PRESETS.map(presetCmd),
@@ -1777,6 +1792,11 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
           <Show when={s && flatMode() && (side === "left" ? n.leftPath : n.rightPath)?.includes("/")}>
             <span class="fdir"> — {parentRel((side === "left" ? n.leftPath : n.rightPath)!)}</span>
           </Show>
+          <Show when={s && n.moved}>
+            <span class="fdir" title={`Identical content exists at ${n.moved}`}>
+              {" "}{statusOf(n) === "left" ? "→" : "←"} {n.moved}
+            </span>
+          </Show>
         </span>
         <Show when={settings.folderColumns.size}>
           <span class="fsize">{s && !n.dir ? fmtSize(s.size) : ""}</span>
@@ -1802,7 +1822,7 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
         <Btn title="Collapse all" onClick={() => setExpanded(new Set<string>())}>⊟ Collapse</Btn>
         <span class="sep" />
         <div class="seg">
-          {([[ALL_BITS, "All"], [0x2cc, "Diffs"], [0x1, "Same"], [0xc, "Orphans"], [0x2c1, "No Orphans"]] as [number, string][]).map(([bits, label]) => (
+          {([[ALL_BITS, "All"], [0x2cc, "Diffs"], [0x1, "Same"], [0xc, "Orphans"], [0x2c1, "No Orphans"], [BIT.moved, "Moved"]] as [number, string][]).map(([bits, label]) => (
             <Btn title={PRESETS.find((p) => p[1] === bits)![2]} active={!suppress() && mask() === bits} onClick={() => setMask(bits)}>
               {label}
             </Btn>
@@ -1846,6 +1866,7 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
         </label>
         <Btn title="Edit file filters (Session Settings › Name Filters)" onClick={() => settingsDialog("names")}>⛃ Filters</Btn>
         <Btn title="Peek: temporarily show items excluded by the file filters" active={peek()} onClick={togglePeek}>👁 Peek</Btn>
+        <Btn title="Skip items excluded by .gitignore files (and always skip .git)" active={!!opts.useGitignore} onClick={toggleGitignore}>.gitignore</Btn>
         <Show when={suppress() || peek()}>
           <span class="badge warn">{suppress() ? "Filters suppressed" : "Peeking at excluded items"}</span>
         </Show>
@@ -1964,6 +1985,7 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
               {busy() ? "Working… " : ""}
               {r().summary.files} files · <span class="st-same">{r().summary.same} same</span> ·{" "}
               {r().summary.similar ? <><span class="st-sim">{r().summary.similar} similar</span> · </> : null}
+              {r().summary.moved ? <><span class="st-sim">{r().summary.moved} moved</span> · </> : null}
               <span class="st-diff">{r().summary.diff} different</span> · <span class="st-orphan">{r().summary.leftOnly} left-only · {r().summary.rightOnly} right-only</span>
               {r().summary.errors ? ` · ${r().summary.errors} errors` : ""}
             </span>
@@ -1982,6 +2004,7 @@ export default function FolderCompare(props: { tab: Tab; active: boolean }) {
             <div class="fside newer"><span class="fname">file.txt</span><span>Different; this side is newer (or no timestamp winner)</span></div>
             <div class="fside older"><span class="fname">file.txt</span><span>Different; this side is older</span></div>
             <div class="fside orphan"><span class="fname">file.txt</span><span>Orphan: exists on this side only</span></div>
+            <div class="fside orphan"><span class="fname">file.txt <span class="fdir">→ new/folder/file.txt</span></span><span>Moved or renamed: identical content exists at another path on the other side</span></div>
             <div class="fside similar"><span class="fname">file.txt</span><span>Similar: only unimportant differences</span></div>
             <div class="fside"><span class="fname">file.txt</span><span>Same</span></div>
             <div class="fside error"><span class="fname">file.txt</span><span>Error reading or comparing</span></div>

@@ -54,6 +54,8 @@ The number of context lines (3 by default) is set with **Context lines (Show Con
 
 **≈ Ignore unimportant** (**View > Ignore Unimportant Differences**) treats unimportant differences as equal, so that they are not shown as differences and Next Difference skips them. It is off by default.
 
+**≈ Ignore whitespace** is the quick switch for whitespace noise: it turns the three whitespace rules on or off together and, when switching on, also turns on **Ignore unimportant**, so lines that differ only in whitespace stop appearing as differences. CRLF and LF line endings are always treated as equal, so a file that only differs in its line endings is never reported as different.
+
 ## Move between differences
 
 - Click **▼ Next** or press `Ctrl+N` to go to the next difference section. Click **▲ Prev** or press `Ctrl+P` to go to the previous one. (**Search > Next Difference Section** and **Search > Previous Difference Section**.)

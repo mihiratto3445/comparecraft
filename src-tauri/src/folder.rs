@@ -47,6 +47,10 @@ pub struct FolderOptions {
     pub ignore_case_names: bool,
     pub follow_symlinks: bool,
     pub dot_names_first: bool,
+    /// Mark one-sided files whose identical content sits at another path as moved/renamed.
+    pub detect_moves: bool,
+    /// Skip items excluded by `.gitignore` files (and the `.git` folder).
+    pub use_gitignore: bool,
     /// Items forced to be compared with each other although their names differ ("Align With").
     pub align: Vec<Alignment>,
 }
@@ -128,6 +132,8 @@ impl Default for FolderOptions {
             ignore_case_names: cfg!(any(windows, target_os = "macos")),
             follow_symlinks: false,
             dot_names_first: true,
+            detect_moves: true,
+            use_gitignore: false,
             align: vec![],
         }
     }
@@ -186,6 +192,9 @@ pub struct Node {
     /// Result of the content comparison, when the criteria compared contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Content>,
+    /// Orphan whose identical content exists on the other side: that item's relative path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Node>,
 }
@@ -204,6 +213,7 @@ impl Node {
             newer: None,
             error: None,
             content: None,
+            moved: None,
             children: vec![],
         }
     }
@@ -218,6 +228,8 @@ pub struct Summary {
     pub diff: u32,
     pub left_only: u32,
     pub right_only: u32,
+    /// Orphan pairs whose identical content sits at another path (counted once per pair).
+    pub moved: u32,
     pub errors: u32,
 }
 
@@ -346,6 +358,164 @@ impl Masks {
     }
 }
 
+/// One pattern of a `.gitignore` file.
+#[derive(Debug, Clone)]
+struct GitRule {
+    /// Folder holding the `.gitignore`, relative to the comparison root ("" for the root).
+    base: String,
+    /// Pattern without a leading or trailing '/'.
+    pattern: String,
+    negated: bool,
+    dir_only: bool,
+    /// The pattern has no '/' and therefore matches a name at any depth below `base`.
+    any_depth: bool,
+}
+
+impl GitRule {
+    fn matches(&self, rel: &str, name: &str, is_dir: bool, ci: bool) -> bool {
+        if self.dir_only && !is_dir {
+            return false;
+        }
+        let Some(below) = path_below(&self.base, rel) else { return false };
+        if self.any_depth {
+            return glob_seg_match(&self.pattern, name, ci);
+        }
+        glob_path_match(&self.pattern, below, ci)
+    }
+}
+
+/// `rel` below `base`, or None when it is not inside that folder.
+fn path_below<'a>(base: &str, rel: &'a str) -> Option<&'a str> {
+    if base.is_empty() {
+        return Some(rel);
+    }
+    rel.strip_prefix(base).and_then(|r| r.strip_prefix('/'))
+}
+
+/// Glob match of one path segment; `*` and `?` only.
+fn glob_seg_match(pattern: &str, name: &str, ci: bool) -> bool {
+    let p: Vec<char> = if ci { pattern.to_lowercase() } else { pattern.to_string() }.chars().collect();
+    let n: Vec<char> = if ci { name.to_lowercase() } else { name.to_string() }.chars().collect();
+    let (mut pi, mut ni) = (0usize, 0usize);
+    let (mut star, mut mark) = (None, 0usize);
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ni = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Glob match of a slash-separated path where a whole `**` segment matches any number of segments.
+fn glob_path_match(pattern: &str, path: &str, ci: bool) -> bool {
+    fn rec(pat: &[&str], path: &[&str], ci: bool) -> bool {
+        match pat.split_first() {
+            None => path.is_empty(),
+            Some((&"**", rest)) => (0..=path.len()).any(|i| rec(rest, &path[i..], ci)),
+            Some((seg, rest)) => match path.split_first() {
+                Some((name, tail)) if glob_seg_match(seg, name, ci) => rec(rest, tail, ci),
+                _ => false,
+            },
+        }
+    }
+    rec(&pattern.split('/').collect::<Vec<_>>(), &path.split('/').collect::<Vec<_>>(), ci)
+}
+
+/// Appends the patterns of one `.gitignore` file to `out`.
+fn parse_gitignore(text: &str, base: &str, out: &mut Vec<GitRule>) {
+    for line in text.lines() {
+        let line = line.strip_prefix('\u{feff}').unwrap_or(line);
+        let mut s = line.trim_end();
+        if s.is_empty() || s.starts_with('#') {
+            continue;
+        }
+        let mut negated = false;
+        if let Some(rest) = s.strip_prefix('\\') {
+            // Escaped first character: a literal '#', '!' or space.
+            s = rest;
+        } else if let Some(rest) = s.strip_prefix('!') {
+            negated = true;
+            s = rest;
+        }
+        let mut dir_only = false;
+        if let Some(rest) = s.strip_suffix('/') {
+            dir_only = true;
+            s = rest;
+        }
+        let anchored = s.starts_with('/');
+        let body = s.trim_start_matches('/');
+        if body.is_empty() {
+            continue;
+        }
+        out.push(GitRule {
+            base: base.to_string(),
+            pattern: body.to_string(),
+            negated,
+            dir_only,
+            any_depth: !anchored && !body.contains('/'),
+        });
+    }
+}
+
+/// Patterns of the `.gitignore` files that apply to a folder, parents first.
+#[derive(Clone, Default)]
+pub(crate) struct GitRules {
+    rules: Vec<GitRule>,
+}
+
+impl GitRules {
+    /// Rules of `dir`, extended by its own `.gitignore` (so deeper files win).
+    fn read(&self, dir: &Loc, rel: &str, o: &FolderOptions) -> GitRules {
+        if !o.use_gitignore {
+            return self.clone();
+        }
+        let Some(path) = dir.disk() else { return self.clone() };
+        let mut rules = self.rules.clone();
+        if let Ok(text) = fs::read_to_string(path.join(".gitignore")) {
+            parse_gitignore(&text, rel, &mut rules);
+        }
+        GitRules { rules }
+    }
+
+    /// Whether an entry is excluded; as in git, the last matching pattern wins.
+    fn ignored(&self, rel: &str, name: &str, is_dir: bool, o: &FolderOptions) -> bool {
+        let mut ignored = false;
+        for rule in &self.rules {
+            if rule.matches(rel, name, is_dir, o.ignore_case_names) {
+                ignored = !rule.negated;
+            }
+        }
+        ignored
+    }
+
+    /// Rules for `rel`, built from the root down (re-comparing a single item).
+    fn at(root: &Loc, rel: &str, o: &FolderOptions) -> GitRules {
+        let mut rules = GitRules::default().read(root, "", o);
+        let mut loc = root.clone();
+        let mut cur = String::new();
+        for seg in rel.split('/').filter(|s| !s.is_empty()) {
+            loc = loc.join(seg);
+            cur = child_rel(&cur, seg);
+            rules = rules.read(&loc, &cur, o);
+        }
+        rules
+    }
+}
+
 /// Compiled form of an enabled `OtherFilter`.
 enum Filter {
     Date { newer: bool, threshold: i64 },
@@ -439,8 +609,11 @@ impl<'a> Ctx<'a> {
     }
 
     /// Whether an entry of `parent` is listed.
-    fn accept(&self, parent: &Loc, name: &str, rel: &str, m: &Meta) -> bool {
+    fn accept(&self, parent: &Loc, name: &str, rel: &str, m: &Meta, git: &GitRules) -> bool {
         if self.o.exclude_hidden && m.protected {
+            return false;
+        }
+        if self.o.use_gitignore && (git.ignored(rel, name, m.is_dir, self.o) || (m.is_dir && name == ".git")) {
             return false;
         }
         if m.is_dir {
@@ -613,11 +786,11 @@ struct Listing {
     entries: BTreeMap<(String, bool), (String, Meta)>,
 }
 
-fn list(loc: &Loc, rel: &str, cx: &Ctx) -> io::Result<Listing> {
+fn list(loc: &Loc, rel: &str, cx: &Ctx, git: &GitRules) -> io::Result<Listing> {
     let mut entries = BTreeMap::new();
     for (name, meta) in loc.entries(cx.o.follow_symlinks)? {
         let crel = child_rel(rel, &name);
-        if !cx.accept(loc, &name, &crel, &meta) {
+        if !cx.accept(loc, &name, &crel, &meta, git) {
             continue;
         }
         entries.insert((cx.o.name_key(&name), meta.is_dir), (name, meta));
@@ -627,12 +800,19 @@ fn list(loc: &Loc, rel: &str, cx: &Ctx) -> io::Result<Listing> {
 
 /// Recursively lists the accepted items of a folder (for snapshots), folders before their contents.
 pub(crate) fn walk(loc: &Loc, rel: &str, cx: &Ctx, out: &mut Vec<(String, Meta)>) -> io::Result<()> {
-    for (_, (name, m)) in list(loc, rel, cx)?.entries {
+    let git = GitRules::default().read(loc, rel, cx.o);
+    walk_with(loc, rel, cx, &git, out)
+}
+
+fn walk_with(loc: &Loc, rel: &str, cx: &Ctx, git: &GitRules, out: &mut Vec<(String, Meta)>) -> io::Result<()> {
+    for (_, (name, m)) in list(loc, rel, cx, git)?.entries {
         let crel = child_rel(rel, &name);
         let is_dir = m.is_dir;
         out.push((crel.clone(), m));
         if is_dir {
-            let _ = walk(&loc.join(&name), &crel, cx, out);
+            let dir = loc.join(&name);
+            let child = git.read(&dir, &crel, cx.o);
+            let _ = walk_with(&dir, &crel, cx, &child, out);
         }
     }
     Ok(())
@@ -717,7 +897,7 @@ fn newer(l: &Side, r: &Side, o: &FolderOptions) -> Option<String> {
     }
 }
 
-fn orphan_tree(parent: &Loc, rel: &str, name: &str, m: &Meta, left: bool, cx: &Ctx, sum: &mut Summary) -> Node {
+fn orphan_tree(parent: &Loc, rel: &str, name: &str, m: &Meta, left: bool, cx: &Ctx, sum: &mut Summary, git: &GitRules) -> Node {
     let s = side(name, m);
     let mut node = Node::new(name, rel, m.is_dir, if left { Status::Left } else { Status::Right });
     if left {
@@ -727,13 +907,14 @@ fn orphan_tree(parent: &Loc, rel: &str, name: &str, m: &Meta, left: bool, cx: &C
     }
     if m.is_dir {
         let loc = parent.join(name);
-        match list(&loc, rel, cx) {
+        let child = git.read(&loc, rel, cx.o);
+        match list(&loc, rel, cx, &child) {
             Ok(l) => {
                 let mut entries: Vec<_> = l.entries.into_iter().collect();
                 entries.sort_by(|a, b| entry_order(&a.0, &b.0, cx.o.dot_names_first));
                 for (_, (cname, cm)) in entries {
                     let crel = format!("{rel}/{cname}");
-                    node.children.push(orphan_tree(&loc, &crel, &cname, &cm, left, cx, sum));
+                    node.children.push(orphan_tree(&loc, &crel, &cname, &cm, left, cx, sum, &child));
                 }
             }
             Err(e) => node.error = Some(e.to_string()),
@@ -746,10 +927,10 @@ fn orphan_tree(parent: &Loc, rel: &str, name: &str, m: &Meta, left: bool, cx: &C
     node
 }
 
-fn compare_dirs(lp: &Loc, rp: &Loc, rel: &str, cx: &Ctx, sum: &mut Summary) -> io::Result<Vec<Node>> {
+fn compare_dirs(lp: &Loc, rp: &Loc, rel: &str, cx: &Ctx, sum: &mut Summary, lgit: &GitRules, rgit: &GitRules) -> io::Result<Vec<Node>> {
     let o = cx.o;
-    let ll = list(lp, rel, cx)?;
-    let rl = list(rp, rel, cx)?;
+    let ll = list(lp, rel, cx, lgit)?;
+    let rl = list(rp, rel, cx, rgit)?;
     // Aligned pairs: the right entry is listed under the left entry's key.
     let mut aligned: BTreeMap<(String, bool), (String, bool)> = BTreeMap::new();
     for a in o.align.iter().filter(|a| o.eq_names(&a.parent, rel)) {
@@ -774,9 +955,9 @@ fn compare_dirs(lp: &Loc, rp: &Loc, rel: &str, cx: &Ctx, sum: &mut Summary) -> i
             _ => rl.entries.get(&key),
         };
         let node = match (l, r) {
-            (Some((ln, lm)), None) => orphan_tree(lp, &child_rel(rel, ln), ln, lm, true, cx, sum),
-            (None, Some((rn, rm))) => orphan_tree(rp, &child_rel(rel, rn), rn, rm, false, cx, sum),
-            (Some((ln, lm)), Some((rn, rm))) => pair_node(lp, rp, &child_rel(rel, ln), ln, lm, rn, rm, cx, sum),
+            (Some((ln, lm)), None) => orphan_tree(lp, &child_rel(rel, ln), ln, lm, true, cx, sum, lgit),
+            (None, Some((rn, rm))) => orphan_tree(rp, &child_rel(rel, rn), rn, rm, false, cx, sum, rgit),
+            (Some((ln, lm)), Some((rn, rm))) => pair_node(lp, rp, &child_rel(rel, ln), ln, lm, rn, rm, cx, sum, lgit, rgit),
             (None, None) => continue,
         };
         out.push(node);
@@ -786,7 +967,7 @@ fn compare_dirs(lp: &Loc, rp: &Loc, rel: &str, cx: &Ctx, sum: &mut Summary) -> i
 
 /// Compares an item present on both sides (`lp`/`rp` are the parent folders).
 #[allow(clippy::too_many_arguments)]
-fn pair_node(lp: &Loc, rp: &Loc, crel: &str, ln: &str, lm: &Meta, rn: &str, rm: &Meta, cx: &Ctx, sum: &mut Summary) -> Node {
+fn pair_node(lp: &Loc, rp: &Loc, crel: &str, ln: &str, lm: &Meta, rn: &str, rm: &Meta, cx: &Ctx, sum: &mut Summary, lgit: &GitRules, rgit: &GitRules) -> Node {
     let o = cx.o;
     let ls = side(ln, lm);
     let rs = side(rn, rm);
@@ -794,7 +975,10 @@ fn pair_node(lp: &Loc, rp: &Loc, crel: &str, ln: &str, lm: &Meta, rn: &str, rm: 
         let mut node = Node::new(ln, crel, true, Status::Same);
         node.left = Some(ls);
         node.right = Some(rs);
-        match compare_dirs(&lp.join(ln), &rp.join(rn), crel, cx, sum) {
+        let (lchild, rchild) = (lp.join(ln), rp.join(rn));
+        let lch = lgit.read(&lchild, crel, o);
+        let rch = rgit.read(&rchild, crel, o);
+        match compare_dirs(&lchild, &rchild, crel, cx, sum, &lch, &rch) {
             Ok(ch) => {
                 node.status = folder_status(&ch);
                 node.newer = if node.status == Status::Diff { content_newer(&ch) } else { None };
@@ -860,12 +1044,14 @@ fn item_node(left: &Loc, right: &Loc, rel: &str, cx: &Ctx) -> Option<Node> {
     let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel));
     let lp = left.join_rel(parent);
     let rp = right.join_rel(&right_rel(parent, o));
-    let l = lp.child(name, o).filter(|(n, m)| cx.accept(&lp, n, rel, m));
-    let r = rp.child(aligned_right(parent, name, o).unwrap_or(name), o).filter(|(n, m)| cx.accept(&rp, n, &child_rel(parent, n), m));
+    let lgit = GitRules::at(left, parent, o);
+    let rgit = GitRules::at(right, &right_rel(parent, o), o);
+    let l = lp.child(name, o).filter(|(n, m)| cx.accept(&lp, n, rel, m, &lgit));
+    let r = rp.child(aligned_right(parent, name, o).unwrap_or(name), o).filter(|(n, m)| cx.accept(&rp, n, &child_rel(parent, n), m, &rgit));
     Some(match (l, r) {
-        (Some((ln, lm)), Some((rn, rm))) if lm.is_dir == rm.is_dir => pair_node(&lp, &rp, rel, &ln, &lm, &rn, &rm, cx, &mut sum),
-        (Some((ln, lm)), _) => orphan_tree(&lp, rel, &ln, &lm, true, cx, &mut sum),
-        (None, Some((rn, rm))) => orphan_tree(&rp, rel, &rn, &rm, false, cx, &mut sum),
+        (Some((ln, lm)), Some((rn, rm))) if lm.is_dir == rm.is_dir => pair_node(&lp, &rp, rel, &ln, &lm, &rn, &rm, cx, &mut sum, &lgit, &rgit),
+        (Some((ln, lm)), _) => orphan_tree(&lp, rel, &ln, &lm, true, cx, &mut sum, &lgit),
+        (None, Some((rn, rm))) => orphan_tree(&rp, rel, &rn, &rm, false, cx, &mut sum, &rgit),
         (None, None) => return None,
     })
 }
@@ -940,12 +1126,14 @@ struct FlatFile {
     meta: Meta,
 }
 
-fn collect_files(loc: &Loc, rel: &str, cx: &Ctx, out: &mut Vec<FlatFile>) -> io::Result<()> {
-    for (_, (name, meta)) in list(loc, rel, cx)?.entries {
+fn collect_files(loc: &Loc, rel: &str, cx: &Ctx, git: &GitRules, out: &mut Vec<FlatFile>) -> io::Result<()> {
+    for (_, (name, meta)) in list(loc, rel, cx, git)?.entries {
         let crel = child_rel(rel, &name);
         if meta.is_dir {
             // Unreadable subfolders are skipped; there is no folder node to carry the error.
-            let _ = collect_files(&loc.join(&name), &crel, cx, out);
+            let dir = loc.join(&name);
+            let child = git.read(&dir, &crel, cx.o);
+            let _ = collect_files(&dir, &crel, cx, &child, out);
         } else {
             out.push(FlatFile { rel: crel, name, parent: loc.clone(), meta });
         }
@@ -957,8 +1145,9 @@ fn collect_files(loc: &Loc, rel: &str, cx: &Ctx, out: &mut Vec<FlatFile>) -> io:
 fn compare_flat(left: &Loc, right: &Loc, cx: &Ctx, sum: &mut Summary) -> io::Result<Vec<Node>> {
     let o = cx.o;
     let (mut lf, mut rf) = (vec![], vec![]);
-    collect_files(left, "", cx, &mut lf)?;
-    collect_files(right, "", cx, &mut rf)?;
+    let (lgit, rgit) = (GitRules::default().read(left, "", o), GitRules::default().read(right, "", o));
+    collect_files(left, "", cx, &lgit, &mut lf)?;
+    collect_files(right, "", cx, &rgit, &mut rf)?;
     let mut groups: BTreeMap<String, (Vec<FlatFile>, Vec<FlatFile>)> = BTreeMap::new();
     for f in lf {
         groups.entry(o.name_key(&f.name)).or_default().0.push(f);
@@ -988,9 +1177,9 @@ fn compare_flat(left: &Loc, right: &Loc, cx: &Ctx, sum: &mut Summary) -> io::Res
     let mut out = Vec::with_capacity(pairs.len());
     for (l, r) in pairs {
         let mut node = match (&l, &r) {
-            (Some(l), Some(r)) => pair_node(&l.parent, &r.parent, &l.rel, &l.name, &l.meta, &r.name, &r.meta, cx, sum),
-            (Some(l), None) => orphan_tree(&l.parent, &l.rel, &l.name, &l.meta, true, cx, sum),
-            (None, Some(r)) => orphan_tree(&r.parent, &r.rel, &r.name, &r.meta, false, cx, sum),
+            (Some(l), Some(r)) => pair_node(&l.parent, &r.parent, &l.rel, &l.name, &l.meta, &r.name, &r.meta, cx, sum, &lgit, &rgit),
+            (Some(l), None) => orphan_tree(&l.parent, &l.rel, &l.name, &l.meta, true, cx, sum, &lgit),
+            (None, Some(r)) => orphan_tree(&r.parent, &r.rel, &r.name, &r.meta, false, cx, sum, &rgit),
             (None, None) => continue,
         };
         node.left_path = l.map(|f| f.rel);
@@ -1009,12 +1198,14 @@ fn compare_flat(left: &Loc, right: &Loc, cx: &Ctx, sum: &mut Summary) -> io::Res
     Ok(out)
 }
 
-fn finish_comparison(nodes: &mut [Node], left: &Loc, right: &Loc, cx: &Ctx, pending: &mut HashMap<String, (Meta, Meta)>, sum: &mut Summary, total: usize) {
+fn finish_comparison(nodes: &mut [Node], left: &Loc, right: &Loc, cx: &Ctx, pending: &mut HashMap<String, (Meta, Meta)>, sum: &mut Summary, total: usize, lgit: &GitRules, rgit: &GitRules) {
     for node in nodes {
         if node.dir {
             let left_child = node.left.as_ref().map_or_else(|| left.clone(), |side| left.join(&side.name));
             let right_child = node.right.as_ref().map_or_else(|| right.clone(), |side| right.join(&side.name));
-            finish_comparison(&mut node.children, &left_child, &right_child, cx, pending, sum, total);
+            let lch = lgit.read(&left_child, &node.rel, cx.o);
+            let rch = rgit.read(&right_child, &node.rel, cx.o);
+            finish_comparison(&mut node.children, &left_child, &right_child, cx, pending, sum, total, &lch, &rch);
             if node.left.is_some() && node.right.is_some() && node.error.is_none() {
                 node.status = folder_status(&node.children);
                 node.newer = if node.status == Status::Diff { content_newer(&node.children) } else { None };
@@ -1026,7 +1217,7 @@ fn finish_comparison(nodes: &mut [Node], left: &Loc, right: &Loc, cx: &Ctx, pend
             let (left_meta, right_meta) = pending.remove(left_rel).expect("discovered paired file metadata");
             let left_parent = node.left_path.as_ref().map_or_else(|| left.clone(), |path| left.join_rel(path.rsplit_once('/').map_or("", |(parent, _)| parent)));
             let right_parent = node.right_path.as_ref().map_or_else(|| right.clone(), |path| right.join_rel(path.rsplit_once('/').map_or("", |(parent, _)| parent)));
-            let compared = pair_node(&left_parent, &right_parent, left_rel, &left_side.name, &left_meta, &right_side.name, &right_meta, cx, sum);
+            let compared = pair_node(&left_parent, &right_parent, left_rel, &left_side.name, &left_meta, &right_side.name, &right_meta, cx, sum, lgit, rgit);
             node.status = compared.status;
             node.newer = compared.newer;
             node.content = compared.content;
@@ -1043,6 +1234,73 @@ pub fn compare_folders(left: &str, right: &str, o: &FolderOptions) -> io::Result
     compare_folders_impl(left, right, o, None)
 }
 
+/// Groups one-sided files of a tree by size and content checksum.
+fn orphan_checksums(nodes: &[Node], left: bool, root: &str, out: &mut HashMap<(u64, u32), Vec<String>>) {
+    for n in nodes {
+        if n.dir {
+            orphan_checksums(&n.children, left, root, out);
+            continue;
+        }
+        if n.left.is_some() && n.right.is_some() {
+            continue;
+        }
+        let Some(side) = (if left { &n.left } else { &n.right }) else { continue };
+        let rel = if left { n.left_path.as_deref().unwrap_or(&n.rel) } else { n.right_path.as_deref().unwrap_or(&n.rel) };
+        if let Ok(crc) = crc32_file(&join_rel(root, rel)) {
+            out.entry((side.size, crc)).or_default().push(rel.to_string());
+        }
+    }
+}
+
+/// Marks one-sided files whose content is identical to a one-sided file at another path, so a
+/// move or rename is not reported as an unrelated deletion plus a new file. Only unambiguous
+/// pairs (exactly one candidate of that content on each side) are matched, so several copies of
+/// the same file are not paired arbitrarily.
+fn detect_moves(nodes: &mut [Node], left: &Loc, right: &Loc, sum: &mut Summary) {
+    let (Some(lroot), Some(rroot)) = (left.disk(), right.disk()) else { return };
+    let (ls, rs) = (lroot.to_string_lossy().into_owned(), rroot.to_string_lossy().into_owned());
+    let (mut lc, mut rc) = (HashMap::new(), HashMap::new());
+    orphan_checksums(nodes, true, &ls, &mut lc);
+    orphan_checksums(nodes, false, &rs, &mut rc);
+    let mut moved: HashMap<String, String> = HashMap::new();
+    for (key, lefts) in &lc {
+        if let Some(rights) = rc.get(key) {
+            if lefts.len() == 1 && rights.len() == 1 {
+                moved.insert(lefts[0].clone(), rights[0].clone());
+                moved.insert(rights[0].clone(), lefts[0].clone());
+            }
+        }
+    }
+    if !moved.is_empty() {
+        annotate_moves(nodes, &moved, sum);
+    }
+}
+
+fn annotate_moves(nodes: &mut [Node], moved: &HashMap<String, String>, sum: &mut Summary) {
+    for n in nodes {
+        if n.dir {
+            annotate_moves(&mut n.children, moved, sum);
+            continue;
+        }
+        let key = if n.status == Status::Left {
+            n.left_path.clone().unwrap_or_else(|| n.rel.clone())
+        } else if n.status == Status::Right {
+            n.right_path.clone().unwrap_or_else(|| n.rel.clone())
+        } else {
+            continue;
+        };
+        if let Some(partner) = moved.get(&key) {
+            n.moved = Some(partner.clone());
+            // A move is one logical change, counted once for the pair.
+            if n.status == Status::Left {
+                sum.left_only = sum.left_only.saturating_sub(1);
+                sum.right_only = sum.right_only.saturating_sub(1);
+                sum.moved += 1;
+            }
+        }
+    }
+}
+
 pub fn compare_folders_with_progress(left: &str, right: &str, o: &FolderOptions, progress: &dyn Fn(ComparisonProgress)) -> io::Result<FolderResult> {
     compare_folders_impl(left, right, o, Some(progress))
 }
@@ -1055,14 +1313,18 @@ fn compare_folders_impl(left: &str, right: &str, o: &FolderOptions, progress: Op
     let rp = open_source(right)?.ok_or_else(|| io::Error::other(format!("Right folder not found: {right}")))?;
     if progress.is_some() { *cx.pending.borrow_mut() = Some(HashMap::new()); }
     let mut sum = Summary::default();
-    let mut children = if o.flatten { compare_flat(&lp, &rp, &cx, &mut sum)? } else { compare_dirs(&lp, &rp, "", &cx, &mut sum)? };
+    let (lgit, rgit) = (GitRules::default().read(&lp, "", o), GitRules::default().read(&rp, "", o));
+    let mut children = if o.flatten { compare_flat(&lp, &rp, &cx, &mut sum)? } else { compare_dirs(&lp, &rp, "", &cx, &mut sum, &lgit, &rgit)? };
     let pending = cx.pending.borrow_mut().take();
     if let Some(mut pending) = pending {
         let total = sum.files as usize;
         sum = Summary { errors: sum.errors, ..Summary::default() };
         cx.notify("comparing", 0, Some(total), true);
-        finish_comparison(&mut children, &lp, &rp, &cx, &mut pending, &mut sum, total);
+        finish_comparison(&mut children, &lp, &rp, &cx, &mut pending, &mut sum, total, &lgit, &rgit);
         cx.notify("comparing", total, Some(total), true);
+    }
+    if o.detect_moves && !o.flatten {
+        detect_moves(&mut children, &lp, &rp, &mut sum);
     }
     let mut root = Node::new("", "", true, folder_status(&children));
     root.newer = if root.status == Status::Diff { content_newer(&children) } else { None };
@@ -1618,6 +1880,74 @@ mod tests {
             }
         }
         panic!("{rel} not found");
+    }
+
+    #[test]
+    fn gitignore_hides_listed_items() {
+        let d = tempfile::tempdir().unwrap();
+        let (l, r) = (d.path().join("L"), d.path().join("R"));
+        for base in [&l, &r] {
+            write(&base.join(".gitignore"), "node_modules/\n*.log\n!keep.log\n/build\ndocs/**/*.tmp\n");
+            write(&base.join("src/main.rs"), "same");
+            write(&base.join("sub/.gitignore"), "*.tmp\n");
+            write(&base.join(".git/HEAD"), "ref");
+        }
+        for name in ["node_modules/x.js", "sub/debug.log", "sub/keep.log", "build/out.bin", "docs/a/b.tmp", "sub/scratch.tmp"] {
+            write(&l.join(name), "only left");
+        }
+        let (ls, rs) = (l.to_string_lossy().into_owned(), r.to_string_lossy().into_owned());
+        let listed = |use_gitignore: bool| -> Vec<String> {
+            let o = FolderOptions { use_gitignore, ignore_case_names: false, ..Default::default() };
+            let res = compare_folders(&ls, &rs, &o).unwrap();
+            let mut v = vec![];
+            fn all(n: &Node, v: &mut Vec<String>) {
+                for c in &n.children {
+                    v.push(c.rel.clone());
+                    all(c, v);
+                }
+            }
+            all(&res.root, &mut v);
+            v.sort();
+            v
+        };
+        let on = listed(true);
+        for hidden in ["node_modules", "node_modules/x.js", "sub/debug.log", "build", "docs/a/b.tmp", "sub/scratch.tmp", ".git", ".git/HEAD"] {
+            assert!(!on.contains(&hidden.to_string()), "{hidden} should be ignored: {on:?}");
+        }
+        for shown in [".gitignore", "sub/.gitignore", "src/main.rs", "sub/keep.log"] {
+            assert!(on.contains(&shown.to_string()), "{shown} should be listed: {on:?}");
+        }
+        let off = listed(false);
+        assert!(off.iter().any(|r| r == "node_modules/x.js") && off.iter().any(|r| r == "sub/debug.log"));
+        // A single re-compared item follows the same rules.
+        let o = FolderOptions { use_gitignore: true, ignore_case_names: false, ..Default::default() };
+        assert!(compare_item(&ls, &rs, "sub/debug.log", &o).is_none());
+        assert!(compare_item(&ls, &rs, "sub/keep.log", &o).is_some());
+    }
+
+    #[test]
+    fn detects_moves_and_renames() {
+        let d = tempfile::tempdir().unwrap();
+        let (l, r) = (d.path().join("L"), d.path().join("R"));
+        write(&l.join("old/name.txt"), "moved content");
+        write(&r.join("new/place.txt"), "moved content");
+        write(&l.join("a.txt"), "a");
+        write(&r.join("a.txt"), "a");
+        let (ls, rs) = (l.to_string_lossy().into_owned(), r.to_string_lossy().into_owned());
+        let res = compare_folders(&ls, &rs, &FolderOptions { ignore_case_names: false, ..Default::default() }).unwrap();
+        assert_eq!(find(&res.root, "old/name.txt").moved.as_deref(), Some("new/place.txt"));
+        assert_eq!(find(&res.root, "new/place.txt").moved.as_deref(), Some("old/name.txt"));
+        // The item keeps its orphan status, but the pair counts once as a move.
+        assert_eq!(find(&res.root, "old/name.txt").status, Status::Left);
+        assert_eq!((res.summary.left_only, res.summary.right_only, res.summary.moved), (0, 0, 1));
+        let plain = compare_folders(&ls, &rs, &FolderOptions { detect_moves: false, ignore_case_names: false, ..Default::default() }).unwrap();
+        assert!(find(&plain.root, "old/name.txt").moved.is_none());
+        assert_eq!((plain.summary.left_only, plain.summary.right_only, plain.summary.moved), (1, 1, 0));
+        // Two identical candidates on a side are ambiguous and stay unpaired.
+        write(&r.join("dup/copy1.txt"), "moved content");
+        let res = compare_folders(&ls, &rs, &FolderOptions { ignore_case_names: false, ..Default::default() }).unwrap();
+        assert_eq!(res.summary.moved, 0);
+        assert!(find(&res.root, "old/name.txt").moved.is_none());
     }
 
     #[test]

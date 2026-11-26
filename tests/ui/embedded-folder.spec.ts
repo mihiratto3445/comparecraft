@@ -5,7 +5,7 @@ const harness = (page: Page) => page.evaluate(() => (window as unknown as { harn
 test.setTimeout(60_000);
 
 /** Mock only the platform transport: this exercises the actual bundled shared folder frontend. */
-async function openFolder(page: Page, config: { failOpen?: boolean; failSave?: boolean; earlyReceipt?: boolean; locked?: boolean; editorFont?: string } = {}) {
+async function openFolder(page: Page, config: { failOpen?: boolean; failSave?: boolean; earlyReceipt?: boolean; locked?: boolean; editorFont?: string; moved?: boolean } = {}) {
   await page.addInitScript((config) => {
     const w = window as unknown as {
       acquireVsCodeApi: () => unknown;
@@ -37,7 +37,17 @@ async function openFolder(page: Page, config: { failOpen?: boolean; failSave?: b
           if (cmd === "find_session") result = { id: "saved-id", name: "Saved Folder", kind: "folder", paths: ["/left", "/right"], options: {}, saved: true, locked: !!config.locked };
           if (cmd === "save_session" && config.failSave && (args.session as { saved: boolean }).saved) error = "Storage unavailable";
           if (cmd === "path_info") result = { path: args.path, exists: true, isDir: false, size: 5, modified: 1000, kind: "text" };
-          if (cmd === "compare_folders") result = {
+          if (cmd === "compare_folders" && config.moved) result = {
+            root: {
+              name: "", rel: "", dir: true, status: "diff",
+              children: [
+                { name: "old.txt", rel: "old.txt", dir: false, status: "left", left: { name: "old.txt", size: 5, modified: 1000 }, moved: "new.txt" },
+                { name: "new.txt", rel: "new.txt", dir: false, status: "right", right: { name: "new.txt", size: 5, modified: 1000 }, moved: "old.txt" },
+              ],
+            },
+            summary: { files: 2, same: 0, similar: 0, diff: 0, leftOnly: 0, rightOnly: 0, moved: 1, errors: 0 },
+          };
+          if (cmd === "compare_folders" && !config.moved) result = {
             root: {
               name: "", rel: "", dir: true, status: "diff",
               children: [{
@@ -46,7 +56,7 @@ async function openFolder(page: Page, config: { failOpen?: boolean; failSave?: b
                 right: { name: "pair.txt", size: 5, modified: 2000 },
               }],
             },
-            summary: { files: 1, same: 0, similar: 0, diff: 1, leftOnly: 0, rightOnly: 0, errors: 0 },
+            summary: { files: 1, same: 0, similar: 0, diff: 1, leftOnly: 0, rightOnly: 0, moved: 0, errors: 0 },
           };
         }
         if (m.method === "openTab") {
@@ -64,7 +74,7 @@ async function openFolder(page: Page, config: { failOpen?: boolean; failSave?: b
     });
   }, config);
   await page.goto("/tests/ui/embedded.html");
-  await expect(page.locator(".frow")).toBeVisible();
+  await expect(page.locator(".frow").first()).toBeVisible();
 }
 
 test("embedded font inheritance overrides desktop font settings without enumerating fonts", async ({ page }) => {
@@ -95,6 +105,15 @@ test("embedded folder hides deferred commands, nested external apps, shortcuts a
   await expect(page.getByText(/Merge Base Folders|Sync Base Folders|Folder Compare Report/)).toHaveCount(0);
   await page.getByText("Session Settings…", { exact: true }).click();
   await expect(page.getByText(/snapshot file/)).toHaveCount(0);
+});
+
+test("moved orphans show their counterpart path and count once in the status bar", async ({ page }) => {
+  await openFolder(page, { moved: true });
+  await expect(page.locator(".fdir", { hasText: "→ new.txt" })).toBeVisible();
+  await expect(page.locator(".fdir", { hasText: "← old.txt" })).toBeVisible();
+  await expect(page.locator(".statusbar")).toContainText("1 moved");
+  await page.getByRole("button", { name: "Moved", exact: true }).click();
+  await expect(page.locator(".frow")).toHaveCount(2);
 });
 
 test("folder reload state preserves identity/options/lock and desktop launch is explicit", async ({ page }) => {

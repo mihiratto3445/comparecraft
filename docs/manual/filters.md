@@ -70,6 +70,10 @@ Below the boxes:
 
 Click **OK** or **Apply** to use the filters. At the bottom of the dialog you choose whether the filters apply to this view only, also become the defaults for new folder comparisons, or are also stored in the saved session. See [Session settings in Folder Compare](folder-compare.md#session-settings).
 
+## .gitignore
+
+The **Reducing noise** group below the name filter boxes has **Skip items excluded by .gitignore**. When it is on, the `.gitignore` files of both trees are applied while the folders are listed, so `node_modules` and build output disappear without writing exclude masks. The `.git` folder is always skipped. The **.gitignore** button on the filter bar toggles the option and reloads the comparison. Nested `.gitignore` files override their parents and `!` re-includes an item. See [Reduce comparison noise](folder-compare.md#reduce-comparison-noise).
+
 ### Name filter presets
 
 Presets are named filters that you can reuse. CompareCraft comes with these presets:

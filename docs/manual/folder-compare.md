@@ -89,6 +89,8 @@ Each row is colored by its comparison result. To see the meaning of the colors a
 | Error color | ! | Error reading or comparing |
 | Ignored style | ◌ | Ignored (treated as same) |
 
+Orphans detected as moved or renamed keep their purple coloring and add the path of their counterpart after the name: `→ other/path` on the left side and `← other/path` on the right. See [Reduce comparison noise](#reduce-comparison-noise).
+
 These are the default colors of the light theme. You can change them on the [Colors, Fonts page of the Options](options.md#colors-fonts).
 
 Folders are colored to reflect their content: a folder that contains differences is shown as different, in red on the side that holds its newest difference and in grey on the other side. A folder whose differences have no timestamp winner (equal timestamps, or errors only) stays red on both sides. To show folders in plain text instead, turn off **Color folders to reflect content** in the Options. **Alternate row background (stripes)** adds stripes to the rows.
@@ -117,7 +119,7 @@ Most commands act on the selection, on the side or sides where it is.
 
 ## Display filters
 
-Display filters choose which rows are shown, without changing the comparison. The toolbar has five buttons:
+Display filters choose which rows are shown, without changing the comparison. The toolbar has six buttons:
 
 | Button | Shows |
 | --- | --- |
@@ -126,8 +128,9 @@ Display filters choose which rows are shown, without changing the comparison. Th
 | Same | Items that are the same |
 | Orphans | Items that exist on one side only |
 | No Orphans | Items that exist on both sides |
+| Moved | Items detected as moved or renamed |
 
-The **View > Show** submenu has more combinations: **Show All**, **Show Differences**, **Show Same**, **Show No Orphans**, **Show Differences but No Orphans**, **Show Orphans**, **Show Left Newer**, **Show Right Newer**, **Show Left Newer and Left Orphans**, **Show Right Newer and Right Orphans**, **Show Left Orphans** and **Show Right Orphans**. Press `Ctrl+1`, `Ctrl+2` or `Ctrl+3` for Show All, Show Differences or Show Same.
+The **View > Show** submenu has more combinations: **Show All**, **Show Differences**, **Show Same**, **Show No Orphans**, **Show Differences but No Orphans**, **Show Orphans**, **Show Left Newer**, **Show Right Newer**, **Show Left Newer and Left Orphans**, **Show Right Newer and Right Orphans**, **Show Left Orphans**, **Show Right Orphans** and **Show Moved and Renamed**. Press `Ctrl+1`, `Ctrl+2` or `Ctrl+3` for Show All, Show Differences or Show Same.
 
 You can also build your own combination by turning these items on or off in the **View** menu: **Same**, **Left Orphans**, **Right Orphans**, **Left Newer**, **Right Newer** and **Differences (no newer side)**. When a filter other than All is active, its name (or "Custom display filter") appears at the right of the filter bar.
 
@@ -147,6 +150,14 @@ The **View** menu has four modes for how folders are shown and compared:
 By default, files are compared by size and timestamp, with a timestamp tolerance of 2 seconds. To change how files are compared, click **⚖ Rules** on the toolbar, or choose **Session > Session Settings…** and open the **Comparison** tab. See [Session Settings](#session-settings).
 
 To check the contents of some files without changing the criteria, select them and choose **Actions > Compare Contents…**. See [Compare contents](#compare-contents).
+
+## Reduce comparison noise
+
+Two options in **Session Settings** keep refactors and build output from drowning the real differences.
+
+**Detect moved and renamed files** (on by default, **Name Filters** tab) marks one-sided files whose identical content sits at another path as moved instead of counting them as a deletion plus an addition. A moved item keeps its orphan row but shows the path of its counterpart (`old/name.rs → new/name.rs`) and is counted once in the status bar as *moved*. Detection needs both sides on disk with file contents, so it is skipped for snapshot sides and for **Ignore Folder Structure**; files with ambiguous matches (several identical copies on a side) are left as plain orphans. Turn the option off to see every file strictly by path.
+
+**Skip items excluded by .gitignore** (off by default) reads the `.gitignore` files of both trees while listing them. Patterns in nested `.gitignore` files override those of their parents, `!` re-includes an item, `dir/` matches folders only, and a pattern with `/` is anchored to the folder that declared it. The `.git` folder is always skipped. The toolbar **.gitignore** button next to **Peek** toggles the option and reloads the comparison, which is the quick way to compare two project trees without `node_modules` and build output.
 
 ## Comparison presets
 
@@ -383,6 +394,8 @@ Archives are always compared as files.
 ### Name Filters and Other Filters
 
 These tabs set which files and folders are included in the comparison. See [Filters](filters.md).
+
+The **Name Filters** tab also holds **Reducing noise**: **Detect moved and renamed files** and **Skip items excluded by .gitignore**, both described in [Reduce comparison noise](#reduce-comparison-noise).
 
 ### Misc
 
