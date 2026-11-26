@@ -2,7 +2,7 @@ import { ask, emit, isEmbedded, listen, save as saveDialog } from "../host";
 import { settings } from "../settings";
 import { batch, createEffect, createMemo, createSignal, Index, onCleanup, onMount, Show } from "solid-js";
 import { api, errText, strictRules, type Chunk, type MergeResult, type Rules, type TextFile } from "../api";
-import { Btn, editorRowHeight, Modal, PathBar, useViewport } from "../components/common";
+import { Btn, editorRowHeight, Modal, PathBar, usePaneFocus, useViewport } from "../components/common";
 import { displayKeys, registerCommands } from "../commands";
 import { showContextMenu } from "../components/ContextMenu";
 import { persistSession, updateTab, type Tab } from "../store";
@@ -55,6 +55,7 @@ export default function TextMerge(props: { tab: Tab; active: boolean }) {
 
   let top!: HTMLDivElement;
   let bottom!: HTMLDivElement;
+  const paneFocus = usePaneFocus<"top" | "bottom">("top");
   const vpTop = useViewport(() => top);
   const vpBot = useViewport(() => bottom);
 
@@ -367,7 +368,7 @@ export default function TextMerge(props: { tab: Tab; active: boolean }) {
           </div>
         ))}
       </div>
-      <div class="mtop" ref={top} onScroll={(e) => vpTop.setScrollTop(e.currentTarget.scrollTop)}>
+      <div class="mtop" ref={top} {...paneFocus.paneProps("top")} onScroll={(e) => vpTop.setScrollTop(e.currentTarget.scrollTop)}>
         <div style={{ height: `${topRows().length * editorRowHeight()}px`, position: "relative" }}>
           <Index each={winTop()}>
             {(it) => {
@@ -394,7 +395,7 @@ export default function TextMerge(props: { tab: Tab; active: boolean }) {
         <span class="plabel">{LABELS[3]}</span>
         <PathBar value={outputPath()} title={tab().titles?.[3]} saveDialog onCommit={(p) => setPath(3, p)} dirty={dirty()} />
       </div>
-      <div class="mbottom" ref={bottom} onScroll={(e) => vpBot.setScrollTop(e.currentTarget.scrollTop)}>
+      <div class="mbottom" ref={bottom} {...paneFocus.paneProps("bottom")} onScroll={(e) => vpBot.setScrollTop(e.currentTarget.scrollTop)}>
         <div style={{ height: `${outRows().length * editorRowHeight()}px`, position: "relative" }}>
           <Index each={winBot()}>
             {(it) => (

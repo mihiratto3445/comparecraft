@@ -112,10 +112,10 @@ To expand folders automatically when a session is loaded, turn on **Expand subfo
 - Click an empty area to clear the selection.
 - Use the arrow keys, `PgUp`, `PgDn`, `Home` and `End` to move the selection. Add `Shift` to extend it.
 - `Ctrl+Left` and `Ctrl+Right` select the left or right side of the selected rows.
-- **Edit > Select All** (`Ctrl+A`) and **Edit > Select All Files** (`Shift+Ctrl+A`) select everything, or only the files.
+- **Edit > Select All** (`Ctrl+A`) selects every visible item on the focused side; **Edit > Select All Files** (`Shift+Ctrl+A`) selects every visible file on that side.
 - **Edit > Select Newer**, **Edit > Select Orphans** (each with **Left**, **Right** and **Both**) and **Edit > Invert Selection** help you select by status.
 
-Most commands act on the selection, on the side or sides where it is.
+Most commands act on the selection on whichever side or sides it spans. A `Ctrl`+click selection can span both sides, but **Select All** and **Select All Files** always use the most recently focused side.
 
 ## Display filters
 

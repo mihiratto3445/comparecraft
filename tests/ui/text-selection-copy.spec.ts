@@ -5,6 +5,15 @@ import type { Locator, Page } from "@playwright/test";
 const leftPane = (page: Page) => page.locator(".tab-view:visible .tpane").nth(0);
 const rightPane = (page: Page) => page.locator(".tab-view:visible .tpane").nth(1);
 const texts = (pane: Locator) => pane.locator(".trow .tx").allTextContents();
+const copiedText = (page: Page) => page.evaluate(() => (window as Window & { __comparecraftClipboard?: string[] }).__comparecraftClipboard ?? []);
+
+async function captureClipboard(page: Page) {
+  await page.addInitScript(() => {
+    const target = window as Window & { __comparecraftClipboard?: string[] };
+    target.__comparecraftClipboard = [];
+    window.addEventListener("comparecraft-test-clipboard", (event) => target.__comparecraftClipboard?.push((event as CustomEvent<{ text: string }>).detail.text));
+  });
+}
 
 async function open(page: Page, folders: { left: string; right: string; pair: (n: string, l: string, r: string) => Promise<void> }) {
   await folders.pair("select.txt", "one\ntwo\nthree\nfour\n", "ONE\nTWO\nTHREE\nfour\n");
@@ -44,4 +53,35 @@ test("dragging text and pressing Ctrl+L copies only the selected lines", async (
   await expect(rightPane(page).locator(".trow.rsel")).toHaveCount(1);
   await page.keyboard.press("Control+l");
   await expect.poll(() => texts(leftPane(page))).toEqual(["ONE", "two", "three", "four"]);
+});
+
+test("dragging text and pressing Ctrl+C copies the pane-local text selection", async ({ page, folders }) => {
+  await captureClipboard(page);
+  await open(page, folders);
+  await dragRight(page, 2);
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? "");
+  expect(selected).not.toBe("");
+  await page.keyboard.press("Control+c");
+  await expect.poll(() => copiedText(page)).toEqual([selected]);
+});
+
+test("Ctrl+A selects and copies only the active pane", async ({ page, folders }) => {
+  await captureClipboard(page);
+  await open(page, folders);
+  const left = leftPane(page);
+  const right = rightPane(page);
+
+  await right.locator(".trow .tx").first().click();
+  await page.keyboard.press("Control+a");
+  await expect(right.locator(".trow.rsel")).toHaveCount(4);
+  await expect(left.locator(".trow.rsel")).toHaveCount(0);
+  await page.keyboard.press("Control+c");
+  await expect.poll(() => copiedText(page)).toEqual(["ONE\nTWO\nTHREE\nfour"]);
+
+  await left.locator(".trow .tx").first().click();
+  await page.keyboard.press("Control+a");
+  await expect(left.locator(".trow.rsel")).toHaveCount(4);
+  await expect(right.locator(".trow.rsel")).toHaveCount(0);
+  await page.keyboard.press("Control+c");
+  await expect.poll(() => copiedText(page)).toEqual(["ONE\nTWO\nTHREE\nfour", "one\ntwo\nthree\nfour"]);
 });

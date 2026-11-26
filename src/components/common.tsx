@@ -94,6 +94,35 @@ export function Btn(props: {
   );
 }
 
+const PANE_INTERACTIVE = "input, textarea, select, button, a, [contenteditable], [role='button']";
+
+/** Keeps a view's active side in sync with real DOM focus without intercepting native control shortcuts. */
+export function usePaneFocus<S extends string | number>(initial: S, onFocus?: (side: S) => void) {
+  const [focused, setFocused] = createSignal(initial);
+  /** Binding for a scroller shared by logical panes; exposes the active side for commands and tests. */
+  const sharedPaneProps = () => ({ "data-pane": "shared", "data-pane-side": String(focused()) });
+  const focus = (side: S, target?: HTMLElement) => {
+    setFocused(() => side);
+    onFocus?.(side);
+    if (target && document.activeElement !== target) target.focus({ preventScroll: true });
+  };
+  const paneProps = (side: S, options: { tabIndex?: number; target?: () => HTMLElement | undefined; preventDefault?: boolean } = {}) => ({
+    tabIndex: options.tabIndex ?? 0,
+    "data-pane": "",
+    "data-pane-side": String(side),
+    // Programmatic focus never bubbles; this keeps the active side in sync (e.g. after swapping sides).
+    onFocusIn: () => focus(side),
+    onMouseDown: (e: MouseEvent & { currentTarget: HTMLDivElement }) => {
+      const hit = e.target instanceof Element ? e.target : null;
+      if (hit?.closest(PANE_INTERACTIVE)) return;
+      // Logical columns share one scroller; keep the real focus boundary there.
+      if (options.preventDefault) e.preventDefault();
+      focus(side, options.target?.() ?? e.currentTarget);
+    },
+  });
+  return { focused, focus, paneProps, sharedPaneProps };
+}
+
 /** Tracks size of a scroll container and computes a virtual window. */
 export function useViewport(el: () => HTMLElement | undefined) {
   const [height, setHeight] = createSignal(600);

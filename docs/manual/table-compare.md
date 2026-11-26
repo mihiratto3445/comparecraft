@@ -68,7 +68,7 @@ Click **⚙ Rules** (or **Session > Session Settings (Rules)…**) to show the r
 
 ## Copy rows
 
-Select rows on one side and click **⧉ Copy** (`Ctrl+C` or `Ctrl+Insert`, **Edit > Copy**). The rows of the side you clicked are copied to the clipboard as delimited text.
+**Edit > Select All** (`Ctrl+A`) selects every visible row. Select rows on one side, then click **⧉ Copy** (`Ctrl+C` or `Ctrl+Insert`, **Edit > Copy**). The selected rows from the focused table side are copied to the clipboard as delimited text.
 
 ## Other commands
 
@@ -77,4 +77,4 @@ Select rows on one side and click **⧉ Copy** (`Ctrl+C` or `Ctrl+Insert`, **Edi
 - **File > Open with Default Application** and **File > Show in File Manager** (on macOS: **Reveal in Finder**) act on the file of the current side.
 - **Session > Save Session** (`Shift+Ctrl+S`) saves the comparison with its rules and key columns. See [Sessions](sessions.md).
 
-Right-click the table for a context menu with **Copy**, the navigation and filter commands, **Reload**, **Swap Sides**, **Open with Default Application** and **Show in File Manager**.
+Right-click the table for a context menu with **Select All**, **Copy**, the navigation and filter commands, **Reload**, **Swap Sides**, **Open with Default Application** and **Show in File Manager**.
