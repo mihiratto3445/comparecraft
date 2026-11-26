@@ -117,4 +117,15 @@ test("the unwrapped pane width tracks line length after edits and undo", async (
   // Undo restores the pre-edit text and its width.
   await page.getByRole("button", { name: "↶ Undo" }).click();
   await expect.poll(width).toBeLessThan(initial);
+
+  // Swapping sides swaps their widths too, even when the tab has no titles array.
+  const rightWidth = () => page.locator(".tab-view:visible .tpane").nth(1).locator(".tpane-inner")
+    .evaluate((el) => Number.parseFloat(el.style.width.match(/[\d.]+/)?.[0] ?? "0"));
+  const beforeSwap = [await width(), await rightWidth()];
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  await page.getByRole("button", { name: "⇄ Swap" }).click();
+  await expect.poll(width).toBe(beforeSwap[1]);
+  await expect.poll(rightWidth).toBe(beforeSwap[0]);
+  expect(pageErrors).toEqual([]);
 });

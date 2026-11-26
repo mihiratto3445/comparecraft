@@ -942,7 +942,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
       setErrors([errors()[1], errors()[0]]);
       setCuts(cuts().map((c) => ({ l: c.r, r: c.l })));
       setAlignFrom(null);
-      updateTab(tab().id, { paths: [tab().paths[1] ?? "", tab().paths[0] ?? ""], titles: [tab().titles[1] ?? null, tab().titles[0] ?? null] });
+      updateTab(tab().id, { paths: [tab().paths[1] ?? "", tab().paths[0] ?? ""], titles: [tab().titles?.[1] ?? null, tab().titles?.[0] ?? null] });
     });
     recompute(true);
   }
