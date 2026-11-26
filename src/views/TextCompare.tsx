@@ -7,14 +7,14 @@ import { showContextMenu } from "../components/ContextMenu";
 import { externalCommands, shellWords } from "../components/external";
 import FindBar from "../components/FindBar";
 import { promptText } from "../components/Prompt";
-import { displayKeys, registerCommands, type Command, type MenuRef } from "../commands";
+import { dispatchKey, displayKeys, registerCommands, type Command, type MenuRef } from "../commands";
 import { openTab, persistSession, reportComparison, updateTab, type Tab } from "../store";
 import { textStatus, type ComparisonStatus } from "../comparisonStatus";
 import { textInfo } from "../components/InfoDialog";
 import { saveSession as saveNamedSession, sessionCommands } from "./sessionMenu";
 import { ReplacementDialog, RulesPanel } from "../components/RulesPanel";
 import { SessionButtons, SessionSaveButton } from "../components/SessionTools";
-import { monoCharWidth, wrapCount, wrapSegments } from "../wrap";
+import { expandTabs, monoCharWidth, wrapCount, wrapSegments } from "../wrap";
 
 type Side = 0 | 1;
 type Filter = "all" | "diffs" | "context" | "same";
@@ -130,7 +130,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
   const [alignFrom, setAlignFrom] = createSignal<{ side: Side; line: number } | null>(null);
   const [ignoredKeys, setIgnoredKeys] = createSignal<Set<string>>(new Set());
   const [replacing, setReplacing] = createSignal<{ from: string; to: string } | null>(null);
-  const [editing, setEditing] = createSignal<{ ri: number; side: Side } | null>(null);
+  const [editing, setEditing] = createSignal<{ ri: number; side: Side; initial?: string; caret?: number } | null>(null);
   const [showRules, setShowRules] = createSignal(false);
   const [editAll, setEditAll] = createSignal<Side | null>(null);
   const [backup, setBackup] = createSignal(settings.backupOnSave);
@@ -153,6 +153,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
 
   let paneL!: HTMLDivElement;
   let paneR!: HTMLDivElement;
+  /** Character offset of the last plain click, so typing inserts where the user clicked. */
+  let caretHint: { ri: number; side: Side; offset: number | undefined } | null = null;
   const vp = useViewport(() => paneL);
   let overview!: HTMLDivElement;
   const mapViewport = useViewport(() => overview);
@@ -290,7 +292,11 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
   onMount(() => {
     // Selecting text with the mouse selects the lines it touches (see trackTextSelection).
     document.addEventListener("selectionchange", trackTextSelection);
-    onCleanup(() => document.removeEventListener("selectionchange", trackTextSelection));
+    document.addEventListener("keydown", typeToEdit);
+    onCleanup(() => {
+      document.removeEventListener("selectionchange", trackTextSelection);
+      document.removeEventListener("keydown", typeToEdit);
+    });
   });
 
   if (isEmbedded()) {
@@ -655,6 +661,55 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
       setSelRow(b);
       setCur(result()?.rows[b]?.h ?? -1);
     });
+  }
+
+  /** Character offset in a row's line at the pointer position, so edits start where the user clicked. */
+  function caretOffsetAt(e: MouseEvent, rowEl: HTMLElement, s: Side, li: number | undefined): number | undefined {
+    const tx = rowEl.querySelector(".tx");
+    const range = document.caretRangeFromPoint?.(e.clientX, e.clientY);
+    if (!tx || !range || !tx.contains(range.startContainer)) return undefined;
+    let acc = 0;
+    let off: number | undefined;
+    const walker = document.createTreeWalker(tx, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (n === range.startContainer) {
+        off = acc + range.startOffset;
+        break;
+      }
+      acc += n.textContent?.length ?? 0;
+    }
+    if (off === undefined) return undefined;
+    const text = li !== undefined ? lines(s)[li] ?? "" : "";
+    // Wrapped segments render tabs expanded to spaces; map back to the raw line.
+    if (wrap() && text.includes("\t")) {
+      const { expOfOrig } = expandTabs(text, settings.tabSize || 4);
+      let i = 0;
+      while (i < text.length && expOfOrig![i + 1] <= off) i++;
+      return i;
+    }
+    return Math.min(off, text.length);
+  }
+
+  /** Typing with a caret line starts editing it right away, inserting the character at the click point. */
+  function typeToEdit(e: KeyboardEvent) {
+    if (!props.active || e.defaultPrevented || e.isComposing || editing()) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+    // A user-defined plain-key shortcut still wins over type-to-edit.
+    if (dispatchKey(e, tab().id)) return;
+    const t = e.target as HTMLElement | null;
+    // Keep native keyboard behavior for controls; Space on a toolbar button must not edit the caret line.
+    if (t?.closest("input, textarea, select, button, a, [contenteditable], [role='button']")) return;
+    if (document.querySelector(".modal-backdrop, .ctx-menu")) return;
+    const s = selSide();
+    const ri = selRow();
+    const row = result()?.rows[ri];
+    if (!row || hasLineSel() || readOnly(s)) return;
+    const li = row[keyOf(s)];
+    const text = li !== undefined ? lines(s)[li] ?? "" : "";
+    const hint = caretHint && caretHint.ri === ri && caretHint.side === s ? caretHint : null;
+    const at = Math.min(hint?.offset ?? text.length, text.length);
+    e.preventDefault();
+    setEditing({ ri, side: s, initial: text.slice(0, at) + e.key + text.slice(at), caret: at + 1 });
   }
 
   /** Replaces a side's lines, keeping manual alignment points in place. */
@@ -1302,6 +1357,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
                 const h = row().h;
                 return h !== undefined && hunkActive(h) && result()!.hunks[h].start === ri ? "sec" : null;
               };
+              /** Set on mousedown when the press lands on the already-selected line: its click edits. */
+              let pressEdit = false;
               return (
                 <div
                   class="trow"
@@ -1322,6 +1379,8 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
                     if (e.button === 2 && s === selSide() && inSel(ri)) return;
                     const from = alignFrom();
                     if (from && from.side !== s && idx() !== undefined) return completeAlign(from, { side: s, line: idx()! });
+                    pressEdit = e.button === 0 && !e.shiftKey && !from && !readOnly(s) && ri === selRow() && s === selSide();
+                    if (e.button === 0 && !e.shiftKey) caretHint = { ri, side: s, offset: caretOffsetAt(e, e.currentTarget, s, idx()) };
                     if (e.shiftKey && selRow() >= 0 && s === selSide()) {
                       e.preventDefault();
                       if (selAnchor() < 0) setSelAnchor(selRow());
@@ -1335,7 +1394,15 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
                       setCur(row().h ?? -1);
                     });
                   }}
-                  onDblClick={() => !readOnly(s) && setEditing({ ri: item().ri, side: s })}
+                  onDblClick={(e) => !readOnly(s) && setEditing({ ri: item().ri, side: s, caret: caretOffsetAt(e, e.currentTarget, s, idx()) })}
+                  onClick={(e) => {
+                    if (!pressEdit) return;
+                    pressEdit = false;
+                    // A text drag (or the word selection of a double-click) is not an edit click.
+                    const sel = window.getSelection();
+                    if (sel && !sel.isCollapsed) return;
+                    setEditing({ ri: item().ri, side: s, caret: caretOffsetAt(e, e.currentTarget, s, idx()) });
+                  }}
                   onContextMenu={(e) => showContextMenu(e, tab().id, paneMenu(s))}
                 >
                   <span
@@ -1353,7 +1420,10 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
                           classList={{ line: b() === "line", left: s === 1 }}
                           tabIndex={-1}
                           title={`${b() === "line" ? "Copy selected lines" : "Copy section"} to ${s === 0 ? "right" : "left"} (${displayKeys(b() === "line" ? (s === 0 ? "Shift+Ctrl+R" : "Shift+Ctrl+L") : s === 0 ? "Ctrl+R" : "Ctrl+L")})`}
-                          onMouseDown={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => {
+                            pressEdit = false;
+                            e.stopPropagation();
+                          }}
                           onDblClick={(e) => e.stopPropagation()}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1390,8 +1460,14 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
                   >
                     <input
                       class="line-edit"
-                      value={idx() !== undefined ? lines(s)[idx()!] : ""}
-                      ref={(el) => setTimeout(() => el.focus())}
+                      value={editing()?.initial ?? (idx() !== undefined ? lines(s)[idx()!] : "")}
+                      ref={(el) =>
+                        queueMicrotask(() => {
+                          el.focus();
+                          const c = editing()?.caret ?? el.value.length;
+                          el.setSelectionRange(c, c);
+                        })
+                      }
                       onKeyDown={(e) => {
                         if (e.key === "Enter") commitEdit(e.currentTarget.value);
                         if (e.key === "Escape") setEditing(null);
@@ -1525,7 +1601,7 @@ export default function TextCompare(props: { tab: Tab; active: boolean }) {
         <Pane side={1} />
       </div>
       <div class="details">
-        <Show when={selRowData()} fallback={<div class="muted">Select a line to see details. Double-click a line to edit it.</div>}>
+        <Show when={selRowData()} fallback={<div class="muted">Select a line to see details. Click it again or just start typing to edit.</div>}>
           {(row) => (
             <>
               <div class="dline">
