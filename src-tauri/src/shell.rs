@@ -336,14 +336,17 @@ mod imp {
         if items.iter().any(|item| item.enabled) {
             let executable = std::env::current_exe()?;
             let parent = executable.parent().ok_or_else(|| io::Error::other("Missing executable directory"))?;
-            let library = [
-                parent.join("libcomparecraft_menu.so"),
-                parent.join("../libcomparecraft_menu.so"),
-                parent.join("resources/libcomparecraft_menu.so"),
-                parent.join("../lib/comparecraft/libcomparecraft_menu.so"),
-                PathBuf::from("/usr/lib/comparecraft/libcomparecraft_menu.so"),
-                PathBuf::from("/usr/lib64/comparecraft/libcomparecraft_menu.so"),
-            ].into_iter().find(|path| path.is_file())
+            let library = std::env::var_os("COMPARECRAFT_MENU_LIBRARY")
+                .map(PathBuf::from)
+                .filter(|path| path.is_file())
+                .or_else(|| [
+                    parent.join("libcomparecraft_menu.so"),
+                    parent.join("../libcomparecraft_menu.so"),
+                    parent.join("resources/libcomparecraft_menu.so"),
+                    parent.join("../lib/comparecraft/libcomparecraft_menu.so"),
+                    PathBuf::from("/usr/lib/comparecraft/libcomparecraft_menu.so"),
+                    PathBuf::from("/usr/lib64/comparecraft/libcomparecraft_menu.so"),
+                ].into_iter().find(|path| path.is_file()))
                 .ok_or_else(|| io::Error::other("Native menu library missing; rebuild or reinstall CompareCraft"))?;
             let native = data.join("comparecraft/native");
             fs::create_dir_all(&native)?;
@@ -375,9 +378,15 @@ mod imp {
             let old_data_dir = std::env::var_os("COMPARECRAFT_DATA_DIR");
             let old_config_dir = std::env::var_os("COMPARECRAFT_CONFIG_DIR");
             let old_context_file = std::env::var_os("COMPARECRAFT_CONTEXT_LEFT_FILE");
+            let old_menu_library = std::env::var_os("COMPARECRAFT_MENU_LIBRARY");
             std::env::set_var("COMPARECRAFT_DATA_DIR", d.path());
             std::env::set_var("COMPARECRAFT_CONFIG_DIR", d.path());
             std::env::remove_var("COMPARECRAFT_CONTEXT_LEFT_FILE");
+            // The cdylib is built by the shell-extension script, not by `cargo test`, so
+            // point the lookup at a stub; the provider only needs the path substituted.
+            let stub_library = d.path().join("libcomparecraft_menu.so");
+            fs::write(&stub_library, b"stub").unwrap();
+            std::env::set_var("COMPARECRAFT_MENU_LIBRARY", &stub_library);
             let item = |id: &str, enabled: bool| ShellItem {
                 id: id.into(),
                 enabled,
@@ -394,6 +403,7 @@ mod imp {
             assert!(st.supported);
             let provider = fs::read_to_string(d.path().join("nautilus-python/extensions/comparecraft.py")).unwrap();
             assert!(!provider.contains("@COMPARECRAFT_MENU_LIBRARY@"));
+            assert!(d.path().join("comparecraft/native/libcomparecraft_menu.so").is_file());
             assert!(!d.path().join("kio/servicemenus/comparecraft-compare.desktop").exists());
             assert!(!d.path().join("Thunar/uca.xml").exists());
             set(&[]).unwrap();
@@ -408,6 +418,12 @@ mod imp {
                 .join("kio/servicemenus/comparecraft-sync.desktop")
                 .exists());
             assert!(!d.path().join("nautilus-python/extensions/comparecraft.py").exists());
+            assert!(!d.path().join("comparecraft/native/libcomparecraft_menu.so").exists());
+            if let Some(value) = old_menu_library {
+                std::env::set_var("COMPARECRAFT_MENU_LIBRARY", value);
+            } else {
+                std::env::remove_var("COMPARECRAFT_MENU_LIBRARY");
+            }
             if let Some(value) = old_data_dir {
                 std::env::set_var("COMPARECRAFT_DATA_DIR", value);
             } else {
