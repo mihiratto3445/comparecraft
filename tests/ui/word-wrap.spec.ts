@@ -13,6 +13,24 @@ async function openText(page: Page, folders: { left: string; right: string }, na
   await expect(page.locator(".tab-view:visible .trow").first()).toBeVisible({ timeout: 15000 });
 }
 
+async function settingsHost(page: Page, initial: Record<string, unknown> = {}) {
+  let settings = initial;
+  await page.route("**/test-invoke", (route) => {
+    const { cmd, args } = route.request().postDataJSON();
+    if (cmd === "load_settings") return route.fulfill({ json: settings });
+    if (cmd === "save_settings") {
+      settings = args.value ?? args.settings;
+      return route.fulfill({ json: null });
+    }
+    return route.continue();
+  });
+  return () => settings;
+}
+
+const open = (page: Page, kind: string, paths: string[]) => page.goto(`/tests/ui/?spec=${encodeURIComponent(JSON.stringify({ kind, paths }))}`);
+
+const sentence = (n: number, tag = "") => Array.from({ length: n }, (_, i) => `word${i}`).join(" ") + tag;
+
 test("word wrap splits long lines into segments and keeps both panes aligned", async ({ page, folders }) => {
   await folders.pair("wrap.txt", `${longLine}\nshort\n`, "tiny\nshort\n");
   await openText(page, folders, "wrap.txt");
@@ -76,17 +94,27 @@ test("wrapped lines expand tabs and keep their diff highlights", async ({ page, 
   await expect(leftPane(page).locator(".trow").nth(0).locator(".txseg .hl").first()).toHaveText("alpha");
 });
 
-test("text edit wraps the textarea to fit the display", async ({ page, folders }) => {
-  await folders.pair("edit.txt", `${longLine}\nshort\n`, "unused\n");
-  const path = join(folders.left, "edit.txt");
-  await page.goto(`/tests/ui/?spec=${encodeURIComponent(JSON.stringify({ kind: "edit", paths: [path] }))}`);
+test("text merge and text edit wrap long lines", async ({ page, folders }) => {
+  await settingsHost(page);
+  await folders.pair("m.txt", ["a", sentence(150), "c"].join("\n"), ["a", sentence(150), "C"].join("\n"));
+  await folders.pair("base.txt", ["a", sentence(150), "c"].join("\n"), "");
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await open(page, "merge", [join(folders.left, "m.txt"), join(folders.right, "m.txt"), join(folders.left, "base.txt")]);
+  const top = page.locator(".tab-view:visible .mtop");
+  await expect(top.locator(".mrow").first()).toBeVisible({ timeout: 15000 });
+  await expect(top).toHaveClass(/wrapped/);
+  await expect(top.locator(".seg").first()).toBeVisible();
+  const boxes = await top.locator(".mrow").evaluateAll((rows) => rows.map((row) => [(row as HTMLElement).offsetTop, (row as HTMLElement).offsetHeight]));
+  for (let i = 1; i < boxes.length; i++) expect(boxes[i][0]).toBe(boxes[i - 1][0] + boxes[i - 1][1]);
+  expect(await top.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await expect(page.locator(".tab-view:visible .mbottom .seg").first()).toBeVisible();
+
+  await open(page, "edit", [join(folders.left, "m.txt")]);
   const area = page.locator(".tab-view:visible textarea.text-edit");
-  await expect(area).toBeVisible({ timeout: 15000 });
-  await expect(area).toHaveValue(`${longLine}\nshort`);
-  expect(await area.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
-  await wrapBtn(page).click();
+  await expect(area).toHaveValue(/word149/);
   await expect(area).toHaveAttribute("wrap", "soft");
   expect(await area.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-  await wrapBtn(page).click();
+  await page.getByRole("button", { name: /Wrap/ }).click();
   await expect(area).toHaveAttribute("wrap", "off");
+  expect(await area.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
 });
