@@ -9,7 +9,6 @@ import { flushSettings, loadSettings, setSetting, settings } from "./settings";
 import { Modal } from "./components/common";
 import { HelpViewer } from "./components/HelpViewer";
 import { ONLINE_MANUAL, pageForView } from "./help/manual";
-import { version as APP_VERSION } from "../package.json";
 import MenuBar, { ShortcutList } from "./components/MenuBar";
 import { PromptHost } from "./components/Prompt";
 import { ReplaceHost } from "./views/folderOps";
@@ -29,6 +28,7 @@ import TextMerge from "./views/TextMerge";
 import FolderMerge from "./views/FolderMerge";
 import TextEdit from "./views/TextEdit";
 import PatchView from "./views/PatchView";
+import { APP_VERSION } from "./version";
 
 function TabView(props: { tab: Tab }) {
   const active = () => state.active === props.tab.id;

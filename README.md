@@ -281,7 +281,9 @@ Installers go to `src-tauri/target/release/bundle/`. The bare binaries are `src-
   ```
 
   This rebuilds the package from the current checkout, even when an archive with the same version already exists.
-  Close any running CompareCraft instances before launching the newly installed version.
+  Close any running CompareCraft instances before launching the newly installed version. The package version comes
+  from the latest release tag (`0.5.0` on the tag itself, `0.5.0.r3.g1234abc` three commits later), and `makepkg`
+  updates the `pkgver=` line in the PKGBUILD to match.
 
 - **Desktop entry:** the Arch package installs [`packaging/linux/comparecraft.desktop`](packaging/linux/comparecraft.desktop);
   the `.deb`, `.rpm` and AppImage bundles generate their own.
@@ -308,6 +310,17 @@ and pull request, including `npm run version:check`, which fails when those mani
 Windows and macOS (Intel and Apple Silicon) and attaches them to a draft release; the build also refuses a tag
 that is not `v` plus the version in the tagged `package.json`, so installer version numbers always match the
 release.
+
+### Versions
+
+The release tag is the version: tag `v1.2.3` names the installers `CompareCraft_1.2.3_…` and Help > About
+shows `CompareCraft 1.2.3`. CI passes it to the build through `COMPARECRAFT_VERSION` and
+[`scripts/version.mjs`](scripts/version.mjs); the versions in `package.json`, `Cargo.toml` and `tauri.conf.json` are
+not changed. Other builds show the checked-in version with `-dev` (for example `0.1.0-dev`).
+
+Tags must be `vN.N.N` or a pre-release such as `v1.2.3-beta.1`. For a pre-release, the MSI and macOS bundle
+versions use `1.2.3` (Windows and macOS only accept numbers there), and no `.rpm` is built because RPM versions
+cannot contain `-`. The VS Code extension accepts only `vN.N.N` tags.
 
 ## Command line
 

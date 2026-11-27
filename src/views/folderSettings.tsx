@@ -224,6 +224,9 @@ export default function FolderSettingsDialog(props: {
                 <label class="opt-check indent"><input type="radio" name="cm" disabled={!contentsOn()} checked={contentsMode() === "rules"} onChange={() => setContentsMode("rules")} /> Rules-based comparison</label>
                 {na("Override quick test results")}
                 {na("Compare versions")}
+                <label class="opt-check" title="Left-only and right-only files with identical contents (size, CRC and bytes) are marked as moved or renamed.">
+                  <input type="checkbox" checked={o.detectMoves !== false} onChange={(e) => setO("detectMoves", e.currentTarget.checked)} /> Detect moved and renamed files
+                </label>
               </>,
             )}
           </Match>
